@@ -15,10 +15,16 @@
 #include "libmill/libmill.h"
 
 static volatile int g_running = 1;
+static volatile int g_streaming = 0;  /* Set to 1 when actively streaming */
 
 void sigint_handler(int sig) {
-    g_running = 0;
-    printf("Canceling\n");
+    if (g_streaming) {
+        g_running = 0;
+        printf("Canceling\n");
+    } else {
+        /* At prompt, just print newline and let user continue */
+        printf("\n");
+    }
 }
 
 /* Coroutine: Process chunks as they arrive */
@@ -65,9 +71,6 @@ coroutine void chunk_processor(stream_client_t *client) {
         
         /* Cleanup chunk memory */
         stream_chunk_cleanup(&chunk);
-        
-        /* Yield to allow other coroutines to run */
-        // yield();
     }
     
     printf("\n\n[Received %d chunks in %ld ms]\n", count,
@@ -190,8 +193,10 @@ int main(int argc, char *argv[]) {
         }
         
         /* Start streaming chat */
+        g_streaming = 1;  /* Mark as streaming so Ctrl+C will cancel */
         if (stream_client_start_chat(client, input) != 0) {
             fprintf(stderr, "\033[1;31mFailed to start chat\033[0m\n");
+            g_streaming = 0;
             continue;
         }
         
@@ -200,17 +205,24 @@ int main(int argc, char *argv[]) {
         go(cancellation_monitor(client));
         
         /* Main loop - can do other work here while streaming happens in background */
-        while (stream_client_get_state(client) == CLIENT_STATE_STREAMING ||
-               stream_client_get_state(client) == CLIENT_STATE_CONNECTING) {
-            msleep(now() + 1000);
+        while (g_running && 
+               (stream_client_get_state(client) == CLIENT_STATE_STREAMING ||
+                stream_client_get_state(client) == CLIENT_STATE_CONNECTING)) {
+            msleep(now() + 100);
             /* The actual chunk processing happens in chunk_processor coroutine */
             /* Here we could do other async work */
         }
         
-        /* Wait for chunk processor to finish */
-        // msleep(now() + 100);
+        /* Wait for CURL thread and chunk processor to finish */
+        stream_client_wait_done(client);
+        /* Give chunk_processor coroutine time to exit its fdwait loop */
+        msleep(now() + 200);
         
         printf("\n");
+        
+        /* Reset flags for next iteration */
+        g_running = 1;
+        g_streaming = 0;
     }
     
     stream_client_free(client);

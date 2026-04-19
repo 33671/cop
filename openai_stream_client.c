@@ -145,7 +145,12 @@ static size_t client_curl_write_cb(char *ptr, size_t size, size_t nmemb, void *u
        the main thread reads data. That provides backpressure. */
     ssize_t written = write(c->data_pipe[1], ptr, total);
     if (written != (ssize_t)total) {
-        log_write(c, "Failed to write all data to pipe (errno=%d)", errno);
+        /* EPIPE means main thread closed the pipe (cancellation) */
+        if (errno == EPIPE) {
+            log_write(c, "Pipe closed by main thread (cancelled)");
+        } else {
+            log_write(c, "Failed to write all data to pipe (errno=%d)", errno);
+        }
         return 0;   /* signal error to CURL */
     }
     
@@ -218,6 +223,7 @@ static void *curl_thread_func(void *arg) {
     
     /* After CURL finishes, close the write end of the pipe to signal EOF */
     if (c->data_pipe[1] >= 0) {
+        log_write(c, "%s:%d,closing write pipe",__FILE__,__LINE__);
         close(c->data_pipe[1]);
         c->data_pipe[1] = -1;
     }
@@ -305,10 +311,12 @@ void stream_client_free(stream_client_t *c) {
     
     /* Close data pipe */
     if (c->data_pipe[0] >= 0) {
+        log_write(c, "%s:%d,closing read pipe",__FILE__,__LINE__);
         fdclean(c->data_pipe[0]);
         close(c->data_pipe[0]);
     }
     if (c->data_pipe[1] >= 0) {
+        log_write(c, "%s:%d,closing write pipe",__FILE__,__LINE__);
         close(c->data_pipe[1]);
     }
     
@@ -364,9 +372,25 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
     c->main_buffer.len = 0;
     if (c->main_buffer.data) c->main_buffer.data[0] = '\0';
     
-    /* Discard any stale data left in the pipe */
-    char dummy[4096];
-    while (read(c->data_pipe[0], dummy, sizeof(dummy)) > 0);
+    /* Close any existing pipe from previous request */
+    if (c->data_pipe[0] >= 0) {
+        fdclean(c->data_pipe[0]);
+        close(c->data_pipe[0]);
+        c->data_pipe[0] = -1;
+    }
+    if (c->data_pipe[1] >= 0) {
+        close(c->data_pipe[1]);
+        c->data_pipe[1] = -1;
+    }
+    
+    /* Create new data pipe for this request */
+    if (pipe(c->data_pipe) != 0) {
+        return -1;
+    }
+    
+    /* Make read end non-blocking for fdwait */
+    int flags = fcntl(c->data_pipe[0], F_GETFL, 0);
+    fcntl(c->data_pipe[0], F_SETFL, flags | O_NONBLOCK);
     
     log_write(c, "Starting chat with prompt: %.100s...", prompt);
     
@@ -428,6 +452,10 @@ void stream_client_cancel(stream_client_t *c) {
     if (!c) return;
     log_write(c, "Cancelling stream");
     c->running = 0;
+    /* Note: We do NOT close the pipe here because fdwait() may be active
+       in another coroutine. Closing a fd while fdwait is watching it
+       causes epoll errors. The fdwait has a 100ms timeout so it will
+       wake up quickly anyway. */
 }
 
 void stream_client_wait_done(stream_client_t *c) {
@@ -502,9 +530,6 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
                     return -1;
                 }
             }
-            
-            /* Yield to allow other coroutines to run */
-            yield();
         }
     }
     
