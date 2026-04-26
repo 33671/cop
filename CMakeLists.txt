@@ -38,23 +38,26 @@ target_include_directories(cjson PUBLIC
 )
 target_compile_options(mill PRIVATE 
     -Wall -Wextra -g -O0
+    # Disable stack protection flags that conflict with libmill's stack switching
+    #-fno-stack-protector -fno-stack-clash-protection -fcf-protection=none
+    -fno-stack-clash-protection 
 )
+
 target_compile_options(cjson PRIVATE 
     -Wall -Wextra -g -O0
 )
 # Check for epoll or kqueue
 include(CheckSymbolExists)
-check_symbol_exists(epoll_create "sys/epoll.h" HAVE_EPOLL)
-check_symbol_exists(kqueue "sys/event.h" HAVE_KQUEUE)
+# check_symbol_exists(epoll_create "sys/epoll.h" HAVE_EPOLL)
+# check_symbol_exists(kqueue "sys/event.h" HAVE_KQUEUE)
 
-if(HAVE_EPOLL)
-    target_compile_definitions(mill PRIVATE MILL_EPOLL)
-elseif(HAVE_KQUEUE)
-    target_compile_definitions(mill PRIVATE MILL_KQUEUE)
-else()
-    target_compile_definitions(mill PRIVATE MILL_POLL)
-endif()
-
+# if(HAVE_EPOLL)
+#     target_compile_definitions(mill PRIVATE MILL_EPOLL)
+# elseif(HAVE_KQUEUE)
+#     target_compile_definitions(mill PRIVATE MILL_KQUEUE)
+# else()
+target_compile_definitions(mill PRIVATE MILL_POLL)
+# endif()
 # Check for OpenSSL
 find_package(OpenSSL)
 if(OPENSSL_FOUND)
@@ -78,6 +81,11 @@ target_include_directories(openai_sse_parser PUBLIC
 add_library(openai_stream_client_lib STATIC
     openai_stream_client.c
 )
+add_library(llm_parser STATIC llm_parser.c)
+target_link_libraries(llm_parser 
+    cjson
+    openai_sse_parser
+)
 target_link_libraries(openai_stream_client_lib
     openai_sse_parser
     cjson
@@ -93,9 +101,15 @@ target_include_directories(openai_stream_client_lib PUBLIC
 
 # Stream client example with async API
 add_executable(openai_stream_client_async openai_stream_client_async_test.c)
+# Disable stack protection flags that conflict with libmill's stack switching
+target_compile_options(openai_stream_client_async PRIVATE
+    #-fno-stack-protector -fno-stack-clash-protection -fcf-protection=none
+    -fno-stack-clash-protection 
+)
 target_link_libraries(openai_stream_client_async
     openai_stream_client_lib
     openai_sse_parser
+    llm_parser
     cjson
     mill
     CURL::libcurl
@@ -107,12 +121,12 @@ message(STATUS "")
 message(STATUS "=== Build Configuration ===")
 message(STATUS "C Compiler: ${CMAKE_C_COMPILER}")
 message(STATUS "CURL: ${CURL_VERSION_STRING}")
-if(HAVE_EPOLL)
-    message(STATUS "Poller: epoll")
-elseif(HAVE_KQUEUE)
-    message(STATUS "Poller: kqueue")
-else()
-    message(STATUS "Poller: poll")
-endif()
+# if(HAVE_EPOLL)
+#     message(STATUS "Poller: epoll")
+# elseif(HAVE_KQUEUE)
+#     message(STATUS "Poller: kqueue")
+# else()
+#     message(STATUS "Poller: poll")
+# endif()
 message(STATUS "===========================")
 message(STATUS "")

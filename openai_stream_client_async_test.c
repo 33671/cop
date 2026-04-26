@@ -13,9 +13,54 @@
 
 #include "openai_stream_client.h"
 #include "libmill/libmill.h"
-
+#include "llm_parser.h"
 static volatile int g_running = 1;
 static volatile int g_streaming = 0;  /* Set to 1 when actively streaming */
+
+/* Load .env file into environment variables */
+static void load_env_file(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        return;  /* Silently skip if file doesn't exist */
+    }
+    
+    printf("Loading environment from: %s\n", path);
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        /* Remove trailing newline/carriage return */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) {
+            line[--len] = '\0';
+        }
+        
+        /* Skip empty lines and comments */
+        if (len == 0 || line[0] == '#') continue;
+        
+        /* Find the '=' separator */
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        
+        *eq = '\0';
+        char *key = line;
+        char *value = eq + 1;
+        
+        /* Trim whitespace from key */
+        while (*key == ' ' || *key == '\t') key++;
+        char *kend = key + strlen(key) - 1;
+        while (kend > key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+        
+        /* Trim whitespace from value (optional) */
+        while (*value == ' ' || *value == '\t') value++;
+        
+        /* Skip if key is empty */
+        if (strlen(key) == 0) continue;
+        
+        /* Set environment variable, overwriting any existing value */
+        setenv(key, value, 1);
+    }
+    
+    fclose(fp);
+}
 
 void sigint_handler(int sig) {
     if (g_streaming) {
@@ -32,17 +77,24 @@ coroutine void chunk_processor(stream_client_t *client) {
     StreamChunk chunk;
     int count = 0;
     int first_token = 0;
-    
+    LlmParser* parser = llm_parser_create();
+    llm_parser_reset(parser);
     printf("\033[1;34mAssistant:\033[0m ");
     fflush(stdout);
-    
+    LlmParserStatus parser_stauts = LLM_PARSER_IDLE;
     while (next_chunk(client, &chunk)) {
         count++;
+        LlmParserStatus parser_stauts_c = llm_parser_feed_chunk(parser, &chunk);
+        if (parser_stauts_c != parser_stauts)
+        {
+            printf("%s\n",llm_parser_status_to_str(parser_stauts_c));
+            parser_stauts = parser_stauts_c;
+        }
         /* Track first token time */
         if (!first_token && (chunk.content || chunk.reasoning_content)) {
             first_token = 1;
         }
-        // if (chunk.role && strcmp(chunk.role, "assistant") == 0)
+        // if (chunk.role != -1) == 0)
         // {
         //     printf("Assitent: \n");
         //     fflush(stdout);
@@ -90,33 +142,15 @@ coroutine void cancellation_monitor(stream_client_t *client) {
         stream_client_cancel(client);
     }
 }
-coroutine void reader() {
-    char buf[256];
-    size_t n;
-
-    printf("开始读取标准输入（按 Ctrl+D 发送 EOF）...\n");
-    while(1) {
-        // mfread 会挂起当前协程直到有数据可读或超时
-        // deadline = -1 表示永不超时
-        n = mfread(mfin, buf, sizeof(buf) - 1, -1);
-        if (n == 0) {
-            // EOF 或错误
-            if (errno != 0) {
-                perror("mfread 出错");
-            } else {
-                printf("\n到达 EOF，退出读取协程。\n");
-            }
-            break;
-        }
-        buf[n] = '\0';
-        // 移除可能包含的换行符以便显示
-        if (n > 0 && buf[n-1] == '\n') buf[n-1] = '\0';
-        printf("读取到: '%s'\n", buf);
-    }
-}
 int main(int argc, char *argv[]) {
-    signal(SIGINT, sigint_handler);
+    /* Load .env file (if exists) to populate environment variables */
+    load_env_file(".env");                     /* Try current directory first */
+    load_env_file("../.env");                   /* Try parent directory (build/ -> project root) */
     
+    signal(SIGINT, sigint_handler);
+    const char *model = "kimi-k2.5";
+    const char *api_endpoint = "https://api.moonshot.cn/v1/chat/completions";
+    const char *log_file = "openai_stream_async.log";
     /* Get API key from environment */
     const char *api_key = getenv("OPENAI_API_KEY");
     if (!api_key) {
@@ -126,11 +160,24 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: Set OPENAI_API_KEY environment variable\n");
         return 1;
     }
-    
-    const char *model = "kimi-k2.5";
-    const char *api_endpoint = "https://api.moonshot.cn/v1/chat/completions";
-    const char *log_file = "openai_stream_async.log";
-    
+    const char *api_url = getenv("OPENAI_BASE_URL");
+    if (!api_url) {
+        fprintf(stderr, "Warning: Set OPENAI_BASE_URL environment variable\n");
+    }
+    else{
+        char api_endpint_real[500];
+        strcpy(api_endpint_real, api_url);
+        strcat(api_endpint_real, "/chat/completions");
+        api_endpoint = api_endpint_real;
+    }
+    const char *model_name = getenv("MODEL_NAME");
+    if (!model_name) {
+        fprintf(stderr, "Warning: Set MODEL_NAME environment variable\n");
+    }
+    else{
+        model = model_name;
+    }
+
     /* Parse arguments */
     int arg_idx = 1;
     while (arg_idx < argc) {
@@ -173,6 +220,7 @@ int main(int argc, char *argv[]) {
     while (1) {
         printf("\033[1;32mYou:\033[0m ");
         fflush(stdout);
+        yield();
         if (!fgets(input, sizeof(input), stdin)) {
             break;
         }

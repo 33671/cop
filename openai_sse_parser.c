@@ -11,7 +11,25 @@
 #include "openai_sse_parser.h"
 
 #define INITIAL_BUFFER_SIZE 65536
-
+Role str_to_role(const char *str) {
+    if (str == NULL) return ROLE_UNKNOWN;
+    
+    if (strcmp(str, "system") == 0)    return ROLE_SYSTEM;
+    if (strcmp(str, "user") == 0)      return ROLE_USER;
+    if (strcmp(str, "assistant") == 0) return ROLE_ASSISTANT;
+    if (strcmp(str, "tool") == 0)      return ROLE_TOOL;
+    
+    return ROLE_UNKNOWN;
+}
+const char* role_to_str(Role role) {
+    switch (role) {
+        case ROLE_SYSTEM:    return "system";
+        case ROLE_USER:      return "user";
+        case ROLE_ASSISTANT: return "assistant";
+        case ROLE_TOOL:      return "tool";
+        default:             return "unknown";
+    }
+}
 /* ============================================================================
  * Stream Buffer Functions
  * ============================================================================ */
@@ -104,7 +122,6 @@ void stream_chunk_cleanup(StreamChunk *chunk) {
     if (!chunk) return;
     free(chunk->id);
     free(chunk->model);
-    free(chunk->role);
     free(chunk->content);
     free(chunk->reasoning_content);
     if (chunk->tool_calls) cJSON_Delete(chunk->tool_calls);
@@ -133,7 +150,7 @@ int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src) {
     
     if (src->id) dst->id = strdup(src->id);
     if (src->model) dst->model = strdup(src->model);
-    if (src->role) dst->role = strdup(src->role);
+    if (src->role) dst->role = src->role;
     if (src->content) dst->content = strdup(src->content);
     if (src->reasoning_content) dst->reasoning_content = strdup(src->reasoning_content);
     if (src->tool_calls) dst->tool_calls = cJSON_Duplicate(src->tool_calls, 1);
@@ -194,7 +211,7 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
         goto check_usage;
     
     /* Extract delta fields */
-    chunk->role = safe_get_string(delta, "role");
+    chunk->role = str_to_role(safe_get_string(delta, "role"));
     chunk->content = safe_get_string(delta, "content");
     
     /* Reasoning content */
@@ -223,7 +240,29 @@ check_usage:
         chunk->prompt_tokens = safe_get_int(usage, "prompt_tokens", -1);
         chunk->completion_tokens = safe_get_int(usage, "completion_tokens", -1);
         chunk->total_tokens = safe_get_int(usage, "total_tokens", -1);
-        chunk->cached_tokens = safe_get_int(usage, "cached_tokens", -1);
+        
+        /* cached_tokens: try multiple formats */
+        chunk->cached_tokens = -1;
+        
+        /* 1) DeepSeek-style: prompt_cache_hit_tokens at usage top level */
+        if (chunk->cached_tokens < 0)
+            chunk->cached_tokens = safe_get_int(usage, "prompt_cache_hit_tokens", -1);
+        
+        /* 2) OpenAI / Kimi-style: usage.prompt_tokens_details.cached_tokens */
+        if (chunk->cached_tokens < 0) {
+            cJSON *details = cJSON_GetObjectItem(usage, "prompt_tokens_details");
+            if (cJSON_IsObject(details))
+                chunk->cached_tokens = safe_get_int(details, "cached_tokens", -1);
+        }
+        
+        /* 3) Direct flat key (legacy / some providers) */
+        if (chunk->cached_tokens < 0)
+            chunk->cached_tokens = safe_get_int(usage, "cached_tokens", -1);
+        
+        /* 4) If still missing, default to 0 */
+        if (chunk->cached_tokens < 0)
+            chunk->cached_tokens = 0;
+        
         chunk->usage_present = 1;
     }
     

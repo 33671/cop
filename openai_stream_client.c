@@ -187,7 +187,7 @@ static void *curl_thread_func(void *arg) {
     snprintf(auth, sizeof(auth), "Authorization: Bearer %s", c->api_key);
     headers = curl_slist_append(headers, auth);
     headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: text/event-stream");
+    headers = curl_slist_append(headers, "Accept: application/json");
     
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, client_curl_write_cb);
@@ -351,6 +351,12 @@ void stream_client_set_temperature(stream_client_t *c, double temp) {
     if (!c) return;
     c->temperature = temp;
 }
+static int debug_callback(CURL *handle, curl_infotype type, char *data, size_t size, void *userptr) {
+    if (type == CURLINFO_TEXT || type == CURLINFO_HEADER_IN || type == CURLINFO_HEADER_OUT) {
+        fwrite(data, 1, size, stdout);
+    }
+    return 0;
+}
 
 /* ============================================================================
  * Streaming API
@@ -382,7 +388,7 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
         close(c->data_pipe[1]);
         c->data_pipe[1] = -1;
     }
-    
+    yield();
     /* Create new data pipe for this request */
     if (pipe(c->data_pipe) != 0) {
         return -1;
@@ -402,12 +408,25 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
     if (!body) return -1;
     
     snprintf(body, 8192,
-        "{\"model\":\"%s\","
+        "{\"model\":\"deepseek-chat\","
         "\"messages\":["
-        "{\"role\":\"system\",\"content\":\"%s\"},"
-        "{\"role\":\"user\",\"content\":\"%s\"}],"
-        "\"temperature\":%.2f,\"stream\":true}",
-        c->model, c->system_message, escaped, c->temperature);
+        "{\"role\":\"system\",\"content\":\"You are a helpful assistant\"},"
+        "{\"role\":\"user\",\"content\":\" %s \"}],"
+        "\"thinking\":{\"type\":\"enabled\"},"
+        "\"frequency_penalty\":0,"
+        "\"max_tokens\":4096,"
+        "\"presence_penalty\":0,"
+        "\"response_format\":{\"type\":\"text\"},"
+        "\"stop\":null,"
+        "\"stream\":true,"
+        "\"stream_options\":null,"
+        "\"temperature\":1,"
+        "\"top_p\":1,"
+        "\"tools\":null,"
+        "\"tool_choice\":\"none\","
+        "\"logprobs\":false,"
+        "\"top_logprobs\":null}",
+    escaped);
     
     log_write(c, "Request body: %s", body);
     
@@ -426,6 +445,10 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
+
+    // curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, debug_callback);
+    // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+    curl_easy_setopt(curl, CURLOPT_STDERR, stdout);
     
     curl_thread_data_t *td = malloc(sizeof(curl_thread_data_t));
     td->client = c;
@@ -462,6 +485,15 @@ void stream_client_wait_done(stream_client_t *c) {
     if (!c) return;
     if (c->curl_running) {
         pthread_join(c->curl_thread, NULL);
+    }
+     if (c->data_pipe[0] >= 0) {
+        fdclean(c->data_pipe[0]);
+        close(c->data_pipe[0]);
+        c->data_pipe[0] = -1;
+    }
+    if (c->data_pipe[1] >= 0) {
+        close(c->data_pipe[1]);
+        c->data_pipe[1] = -1;
     }
 }
 
@@ -515,6 +547,11 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
         /* Wait for data on the pipe */
         if (c->running && c->curl_running) {
             int ev = fdwait(c->data_pipe[0], FDW_IN, now() + 100);
+            if (ev & FDW_ERR) {
+                log_write(c, "fdwait error, forcing pipe cleanup");
+                fdclean(c->data_pipe[0]);   
+                break;
+            }
             
             if (ev & FDW_IN) {
                 /* Read available data into main buffer */

@@ -15,6 +15,19 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <stdio.h>
+#include <string.h>
+
+typedef enum {
+    ROLE_SYSTEM = 0, // only used in the request
+    ROLE_USER = 1, // only used in the request
+    ROLE_ASSISTANT = 2,  // only from the response
+    ROLE_TOOL = 3, // only used in the request
+    ROLE_UNKNOWN = -1 
+} Role;
+
+Role str_to_role(const char *str);
+const char* role_to_str(Role role);
 
 /* ============================================================================
  * StreamChunk - Parsed SSE Data Structure
@@ -26,9 +39,9 @@ typedef struct {
     long created;            /* timestamp (0 if missing) */
 
     /* Delta content (all nullable) */
-    char *role;              /* "assistant" (usually only first chunk) */
-    char *content;           /* normal text content */
-    char *reasoning_content; /* thinking/reasoning text (Kimi / OpenAI o1) */
+    Role role;              /* ROLE_ASSISTANT, usually only not Unknown on first chunk */
+    char *content;           /* normal text content, NULL when reasoning*/
+    char *reasoning_content; /* thinking/reasoning text (OpenAI) */
     int finish_reason_present; /* 1 if finish_reason exists */
     char finish_reason[32];
 
