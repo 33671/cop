@@ -12,7 +12,7 @@ typedef enum {
     STATE_IDLE,
     STATE_IN_ASSISTANT,
     STATE_ERROR
-} ParserState;
+} ParserState_Internal;
 
 typedef struct {
     int index;
@@ -23,7 +23,7 @@ typedef struct {
 } ToolCallSlot;
 
 struct LlmParser {
-    ParserState state;
+    ParserState_Internal state;
     cJSON *history;            /* {"messages": [...]} */
     cJSON *messages_array;
 
@@ -110,7 +110,7 @@ static void reset_assistant(LlmParser *p)
     p->assistant.flag_reasoning = 0;
     p->assistant.flag_content = 0;
     p->assistant.flag_tool = 0;
-    p->assistant.last_status = LLM_PARSER_RESPONDING;
+    p->assistant.last_status = LLM_PARSER_IDLE;
 }
 
 static ToolCallSlot *get_tool_call_slot(LlmParser *p, int index)
@@ -193,7 +193,7 @@ LlmParser *llm_parser_create(void)
     p->messages_array = cJSON_CreateArray();
     cJSON_AddItemToObject(p->history, "messages", p->messages_array);
     p->last_usage.cached_tokens = -1;
-    p->assistant.last_status = LLM_PARSER_RESPONDING;
+    p->assistant.last_status = LLM_PARSER_IDLE;
     return p;
 }
 
@@ -429,10 +429,10 @@ const char* llm_parser_status_to_str(LlmParserStatus status) {
 
         /* Success states */
         case LLM_PARSER_IDLE:              return "LLM_PARSER_IDLE";
-        case LLM_PARSER_REASONING:         return "LLM_PARSER_REASONING";
-        case LLM_PARSER_RESPONDING:        return "LLM_PARSER_RESPONDING";
-        case LLM_PARSER_WRITING_TOOL_CALL: return "LLM_PARSER_WRITING_TOOL_CALL";
-        case LLM_PARSER_FINISHED:          return "LLM_PARSER_FINISHED";
+        case LLM_PARSER_REASONING:         return "LLM_REASONING";
+        case LLM_PARSER_RESPONDING:        return "LLM_RESPONDING";
+        case LLM_PARSER_WRITING_TOOL_CALL: return "LLM_WRITING_TOOL_CALL";
+        case LLM_PARSER_FINISHED:          return "LLM_FINISHED";
 
         default: return "UNKNOWN_LLM_PARSER_STATUS";
     }

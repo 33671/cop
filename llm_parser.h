@@ -19,7 +19,8 @@ typedef enum {
     LLM_PARSER_REASONING         = 1,   /* accumulating reasoning_content */
     LLM_PARSER_RESPONDING        = 2,   /* accumulating content */
     LLM_PARSER_WRITING_TOOL_CALL = 3,   /* accumulating tool_calls */
-    LLM_PARSER_FINISHED          = 4    /* this chunk triggered message completion */
+    LLM_PARSER_FINISHED          = 4,    /* this chunk triggered message completion */
+    LLM_PARSER_ASSISTANT_START   = 5,
 } LlmParserStatus;
 
 /* ============================================================================

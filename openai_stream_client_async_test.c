@@ -78,7 +78,7 @@ coroutine void chunk_processor(stream_client_t *client) {
     int count = 0;
     int first_token = 0;
     LlmParser* parser = llm_parser_create();
-    llm_parser_reset(parser);
+    // llm_parser_reset(parser);
     printf("\033[1;34mAssistant:\033[0m ");
     fflush(stdout);
     LlmParserStatus parser_stauts = LLM_PARSER_IDLE;
@@ -87,7 +87,7 @@ coroutine void chunk_processor(stream_client_t *client) {
         LlmParserStatus parser_stauts_c = llm_parser_feed_chunk(parser, &chunk);
         if (parser_stauts_c != parser_stauts)
         {
-            printf("%s\n",llm_parser_status_to_str(parser_stauts_c));
+            printf("\n%s\n",llm_parser_status_to_str(parser_stauts_c));
             parser_stauts = parser_stauts_c;
         }
         /* Track first token time */

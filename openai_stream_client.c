@@ -422,8 +422,8 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
         "\"stream_options\":null,"
         "\"temperature\":1,"
         "\"top_p\":1,"
-        "\"tools\":null,"
-        "\"tool_choice\":\"none\","
+        "\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"sleep\",\"description\":\"sleep for n secs\",\"parameters\":{\"type\":\"object\",\"properties\":{\"secs\":{\"type\":\"number\",\"description\":\"secs to sleep\"}},\"required\":[\"secs\"]}}}],"
+        "\"tool_choice\":\"auto\","
         "\"logprobs\":false,"
         "\"top_logprobs\":null}",
     escaped);
