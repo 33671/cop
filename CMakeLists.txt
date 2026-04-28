@@ -81,10 +81,23 @@ target_include_directories(openai_sse_parser PUBLIC
 add_library(openai_stream_client_lib STATIC
     openai_stream_client.c
 )
+
+add_library(tool_call_parser STATIC
+    tool_call_parser.c
+)
+target_link_libraries(tool_call_parser 
+    cjson
+)
+target_include_directories(tool_call_parser PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+)
+
 add_library(llm_parser STATIC llm_parser.c)
 target_link_libraries(llm_parser 
     cjson
     openai_sse_parser
+    tool_call_parser
 )
 target_link_libraries(openai_stream_client_lib
     openai_sse_parser

@@ -34,7 +34,7 @@ typedef struct LlmParser LlmParser;
 LlmParser *llm_parser_create(void);
 void       llm_parser_destroy(LlmParser *p);
 
-/* Add a complete user/tool/system message (cJSON object). Must be called in IDLE. */
+/* Add a complete user/tool/system message (cJSON object). Will be cloned, caller should free the json. Must be called in IDLE. */
 LlmParserStatus llm_parser_add_message(LlmParser *p, const cJSON *msg_obj);
 
 /* Feed one assistant StreamChunk. Returns current message status or negative error. */
