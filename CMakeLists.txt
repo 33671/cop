@@ -7,7 +7,6 @@ set(CMAKE_BUILD_TYPE Debug)
 
 # Find required packages
 find_package(CURL REQUIRED)
-find_package(Threads REQUIRED)
 
 # Build libmill as a static library
 set(LIBMILL_SOURCES
@@ -109,7 +108,6 @@ target_link_libraries(llm_runtime
     cjson
     mill
     CURL::libcurl
-    Threads::Threads
 )
 target_include_directories(llm_runtime PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -121,7 +119,6 @@ target_link_libraries(openai_stream_client_lib
     cjson
     mill
     CURL::libcurl
-    Threads::Threads
 )
 target_include_directories(openai_stream_client_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -144,7 +141,6 @@ target_link_libraries(openai_stream_client_async
     cjson
     mill
     CURL::libcurl
-    Threads::Threads
 )
 
 # isocline library (amalgamation build)
@@ -170,7 +166,6 @@ target_link_libraries(llm_runtime_test
     cjson
     mill
     CURL::libcurl
-    Threads::Threads
 )
 
 # Print configuration

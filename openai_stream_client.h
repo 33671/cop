@@ -2,12 +2,12 @@
  * openai_stream_client.h
  * 
  * Async streaming client for OpenAI-compatible APIs.
- * Uses libcurl in a separate thread with libmill coroutines for async iteration.
+ * Uses libcurl in a forked child process with libmill coroutines for async iteration.
  * 
- * Thread Safety:
- * - CURL thread writes to buffer and signals via pipe
- * - Main thread (libmill coroutines) reads from buffer via pipe notification
- * - Buffer is protected by mutex
+ * Architecture:
+ * - Child process runs curl and writes HTTP stream data to a pipe
+ * - Parent process (libmill coroutines) reads from pipe via fdwait()
+ * - Cancellation: kill(child_pid, SIGKILL) stops the request immediately
  */
 
 #ifndef OPENAI_STREAM_CLIENT_H
@@ -43,9 +43,8 @@ typedef struct stream_client {
     char *system_message;
     double temperature;
     
-    /* CURL thread */
-    pthread_t curl_thread;
-    int curl_running;
+    /* CURL child process */
+    pid_t curl_pid;
     
     /* State */
     volatile int running;
@@ -54,10 +53,10 @@ typedef struct stream_client {
     char *error_message;
     int done;
     
-    /* Pipe for data transfer (CURL thread -> main thread) */
+    /* Pipe for data transfer (child process -> parent process) */
     int data_pipe[2];                 /* [0]=read end, [1]=write end */
     
-    /* Main thread buffer (no locking needed) */
+    /* Parent process buffer */
     stream_buffer_t main_buffer;
     
     /* Stats */
@@ -126,7 +125,7 @@ void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas);
  * The full request body is built from client config (model, temperature,
  * system_message) plus the provided messages, with stream=true.
  *
- * This launches libcurl in a separate thread.
+ * This forks a child process running libcurl via mfork().
  * Returns 0 on success, -1 on error.
  */
 int stream_client_start_chat(stream_client_t *c, cJSON *messages);
@@ -139,13 +138,13 @@ int stream_client_has_more(stream_client_t *c);
 
 /*
  * Cancel an ongoing streaming request.
- * Sets running=0 which causes CURL to abort via xfer_callback.
+ * Kills the child process running curl via SIGKILL.
  */
 void stream_client_cancel(stream_client_t *c);
 
 /*
  * Wait for the streaming request to complete.
- * Blocks until CURL thread finishes.
+ * Blocks until child process finishes (waitpid).
  */
 void stream_client_wait_done(stream_client_t *c);
 

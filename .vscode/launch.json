@@ -8,7 +8,7 @@
             "name": "Launch",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceRoot}/build/openai_stream_client_async",
+            "program": "${workspaceRoot}/build/llm_runtime_test",
             "args": [],
             "cwd": "${workspaceRoot}/build",
             "envFile": "${workspaceRoot}/.env",

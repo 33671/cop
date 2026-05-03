@@ -2,12 +2,12 @@
  * openai_stream_client.c
  * 
  * Async streaming client for OpenAI-compatible APIs.
- * Uses libcurl in a separate thread with libmill coroutines for async iteration.
+ * Uses libcurl in a forked child process with libmill coroutines for async iteration.
  * 
- * Thread Communication:
- * - CURL thread writes to buffer, then writes byte to pipe to notify main thread
- * - Main thread uses fdwait() on pipe to wait for data
- * - Buffer is protected by mutex
+ * Process Communication:
+ * - Child process runs curl and writes HTTP stream data to a pipe
+ * - Parent process uses fdwait() on pipe to wait for data
+ * - Cancellation kills the child process via SIGKILL, pipe EOF signals completion
  */
 
 #define _GNU_SOURCE
@@ -15,12 +15,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
-#include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/wait.h>
+#include <signal.h>
 #include <curl/curl.h>
 
 #include "openai_stream_client.h"
@@ -92,62 +93,28 @@ static void log_raw_data(stream_client_t *c, const char *data, size_t len) {
 }
 
 /* ============================================================================
- * JSON Escaping
+ * CURL Write Callback (runs in child process)
  * ============================================================================ */
-static void json_escape(const char *input, char *output, size_t out_size) {
-    size_t j = 0;
-    for (size_t i = 0; input[i] && j < out_size - 1; i++) {
-        switch (input[i]) {
-            case '"': 
-                if (j + 2 < out_size) { output[j++] = '\\'; output[j++] = '"'; }
-                break;
-            case '\\':
-                if (j + 2 < out_size) { output[j++] = '\\'; output[j++] = '\\'; }
-                break;
-            case '\n':
-                if (j + 2 < out_size) { output[j++] = '\\'; output[j++] = 'n'; }
-                break;
-            case '\r':
-                if (j + 2 < out_size) { output[j++] = '\\'; output[j++] = 'r'; }
-                break;
-            case '\t':
-                if (j + 2 < out_size) { output[j++] = '\\'; output[j++] = 't'; }
-                break;
-            default:
-                output[j++] = input[i];
-        }
-    }
-    output[j] = '\0';
-}
 
-/* ============================================================================
- * CURL Callbacks
- * ============================================================================ */
-typedef struct {
-    stream_client_t *client;
-    CURL *curl;
-    char *body;
-} curl_thread_data_t;
-
+/*
+ * Write callback: curl calls this with received HTTP body data.
+ * We write directly to the pipe; the parent process reads it.
+ * Returns 0 to signal error to curl (e.g. if pipe is broken).
+ */
 static size_t client_curl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t total = size * nmemb;
     stream_client_t *c = (stream_client_t *)userdata;
-    
-    if (!c->running) {
-        log_write(c, "CURL write callback: aborting (running=0)");
-        return 0;
-    }
     
     c->total_bytes += total;
     log_raw_data(c, ptr, total);
     
     /* Write raw data to the pipe. If the pipe is full, this blocks until
-       the main thread reads data. That provides backpressure. */
+       the parent process reads data. That provides backpressure. */
     ssize_t written = write(c->data_pipe[1], ptr, total);
     if (written != (ssize_t)total) {
-        /* EPIPE means main thread closed the pipe (cancellation) */
+        /* EPIPE means parent closed the pipe (cancellation) */
         if (errno == EPIPE) {
-            log_write(c, "Pipe closed by main thread (cancelled)");
+            log_write(c, "Pipe closed by parent (cancelled)");
         } else {
             log_write(c, "Failed to write all data to pipe (errno=%d)", errno);
         }
@@ -155,84 +122,6 @@ static size_t client_curl_write_cb(char *ptr, size_t size, size_t nmemb, void *u
     }
     
     return total;
-}
-
-static int client_curl_xfer_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
-                               curl_off_t ultotal, curl_off_t ulnow) {
-    stream_client_t *c = (stream_client_t *)clientp;
-    
-    /* Return non-zero to abort transfer if running is 0 */
-    if (!c->running) {
-        log_write(c, "CURL xfer callback: aborting (running=0)");
-        return 1;  /* Abort */
-    }
-    
-    return 0;  /* Continue */
-}
-
-/* ============================================================================
- * CURL Thread
- * ============================================================================ */
-static void *curl_thread_func(void *arg) {
-    curl_thread_data_t *td = (curl_thread_data_t *)arg;
-    stream_client_t *c = td->client;
-    CURL *curl = td->curl;
-    
-    log_write(c, "CURL thread started");
-    c->curl_running = 1;
-    c->state = CLIENT_STATE_STREAMING;
-    
-    struct curl_slist *headers = NULL;
-    char auth[512];
-    snprintf(auth, sizeof(auth), "Authorization: Bearer %s", c->api_key);
-    headers = curl_slist_append(headers, auth);
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-    
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, client_curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, c);
-    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
-    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, client_curl_xfer_cb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, c);
-    
-    log_write(c, "Starting CURL perform");
-    CURLcode res = curl_easy_perform(curl);
-    
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-    
-    if (res != CURLE_OK) {
-        if (!c->running && res == CURLE_WRITE_ERROR) {
-            /* This is expected when we abort */
-            log_write(c, "CURL aborted by user");
-        } else {
-            log_write(c, "CURL error: %s", curl_easy_strerror(res));
-            c->error_code = res;
-            c->state = CLIENT_STATE_ERROR;
-        }
-    } else {
-        log_write(c, "CURL completed successfully");
-        c->state = CLIENT_STATE_DONE;
-    }
-    
-    /* Mark as done - this signals the main thread to finish */
-    c->curl_running = 0;
-    c->done = 1;
-    c->end_time = get_timestamp_ms();
-    
-    /* After CURL finishes, close the write end of the pipe to signal EOF */
-    if (c->data_pipe[1] >= 0) {
-        log_write(c, "%s:%d,closing write pipe",__FILE__,__LINE__);
-        close(c->data_pipe[1]);
-        c->data_pipe[1] = -1;
-    }
-    
-    free(td->body);
-    free(td);
-    
-    log_write(c, "CURL thread exiting");
-    return NULL;
 }
 
 /* ============================================================================
@@ -258,13 +147,13 @@ stream_client_t *stream_client_new(const char *api_key,
     
     c->state = CLIENT_STATE_IDLE;
     c->running = 0;
-    c->curl_running = 0;
     c->done = 0;
     c->error_code = 0;
+    c->curl_pid = -1;
     c->data_pipe[0] = -1;
     c->data_pipe[1] = -1;
     
-    /* Initialize main thread buffer */
+    /* Initialize parent process buffer */
     if (stream_buffer_init(&c->main_buffer) != 0) {
         free(c);
         return NULL;
@@ -301,12 +190,15 @@ stream_client_t *stream_client_new(const char *api_key,
 void stream_client_free(stream_client_t *c) {
     if (!c) return;
     
-    /* Cancel any ongoing request */
+    /* Cancel any ongoing request (kills child process) */
     stream_client_cancel(c);
     
-    /* Wait for CURL thread to finish */
-    if (c->curl_running) {
-        pthread_join(c->curl_thread, NULL);
+    /* Wait for child process to finish (reap zombie) */
+    if (c->curl_pid > 0) {
+        int status;
+        log_write(c, "Waiting for child process (pid=%d) to exit", c->curl_pid);
+        waitpid(c->curl_pid, &status, 0);
+        c->curl_pid = -1;
     }
     
     /* Close data pipe */
@@ -357,12 +249,6 @@ void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas) {
     if (!c) return;
     cJSON_Delete(c->tool_schemas);
     c->tool_schemas = schemas ? cJSON_Duplicate(schemas, 1) : NULL;
-}
-static int debug_callback(CURL *handle, curl_infotype type, char *data, size_t size, void *userptr) {
-    if (type == CURLINFO_TEXT || type == CURLINFO_HEADER_IN || type == CURLINFO_HEADER_OUT) {
-        fwrite(data, 1, size, stdout);
-    }
-    return 0;
 }
 
 /* ============================================================================
@@ -453,9 +339,16 @@ int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
     c->end_time = 0;
     c->state = CLIENT_STATE_CONNECTING;
     
-    /* Clear main buffer (only accessed by main thread) */
+    /* Clear parent buffer */
     c->main_buffer.len = 0;
     if (c->main_buffer.data) c->main_buffer.data[0] = '\0';
+    
+    /* Reap any previous zombie child */
+    if (c->curl_pid > 0) {
+        int status;
+        waitpid(c->curl_pid, &status, WNOHANG);
+        c->curl_pid = -1;
+    }
     
     /* Close any existing pipe from previous request */
     if (c->data_pipe[0] >= 0) {
@@ -482,6 +375,10 @@ int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
     /* Build request body from client config + messages */
     char *body = build_request_body(c, messages);
     if (!body) {
+        close(c->data_pipe[0]);
+        close(c->data_pipe[1]);
+        c->data_pipe[0] = -1;
+        c->data_pipe[1] = -1;
         c->running = 0;
         return -1;
     }
@@ -492,6 +389,10 @@ int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
     CURL *curl = curl_easy_init();
     if (!curl) {
         free(body);
+        close(c->data_pipe[0]);
+        close(c->data_pipe[1]);
+        c->data_pipe[0] = -1;
+        c->data_pipe[1] = -1;
         c->running = 0;
         return -1;
     }
@@ -505,25 +406,84 @@ int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
     
-    curl_thread_data_t *td = malloc(sizeof(curl_thread_data_t));
-    if (!td) {
-        curl_easy_cleanup(curl);
-        free(body);
-        c->running = 0;
-        return -1;
-    }
-    td->client = c;
-    td->curl = curl;
-    td->body = body;
+    /* Set up write callback (data -> pipe) */
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, client_curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, c);
     
-    /* Start CURL thread */
-    if (pthread_create(&c->curl_thread, NULL, curl_thread_func, td) != 0) {
+    /* No progress/xfer callback needed — we use kill() for cancellation */
+    
+    /* Set up HTTP headers */
+    struct curl_slist *headers = NULL;
+    char auth[512];
+    snprintf(auth, sizeof(auth), "Authorization: Bearer %s", c->api_key);
+    headers = curl_slist_append(headers, auth);
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    
+    /* Fork a child process to run the HTTP request */
+    pid_t pid = mfork();
+    if (pid < 0) {
+        /* Fork failed */
+        log_write(c, "mfork failed: %s", strerror(errno));
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
         free(body);
-        free(td);
+        close(c->data_pipe[0]);
+        close(c->data_pipe[1]);
+        c->data_pipe[0] = -1;
+        c->data_pipe[1] = -1;
         c->running = 0;
         return -1;
     }
+    
+    if (pid == 0) {
+        /* ================================================================
+         * CHILD PROCESS — runs curl, writes HTTP stream to pipe, then exits
+         * ================================================================ */
+        
+        /* Close read end of pipe (only parent reads) */
+        close(c->data_pipe[0]);
+        
+        log_write(c, "Child process: starting CURL perform (pid=%d)", getpid());
+        c->state = CLIENT_STATE_STREAMING;
+        
+        CURLcode res = curl_easy_perform(curl);
+        
+        if (res != CURLE_OK) {
+            log_write(c, "Child process: CURL error: %s", curl_easy_strerror(res));
+        } else {
+            log_write(c, "Child process: CURL completed successfully");
+        }
+        
+        /* Close write end of pipe → signals EOF to parent */
+        close(c->data_pipe[1]);
+        
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        free(body);
+        
+        log_write(c, "Child process: exiting (status=%d)", res == CURLE_OK ? 0 : 1);
+        _exit(res == CURLE_OK ? 0 : 1);
+    }
+    
+    /* ================================================================
+     * PARENT PROCESS — tracks child, reads from pipe via fdwait()
+     * ================================================================ */
+    
+    c->curl_pid = pid;
+    c->state = CLIENT_STATE_STREAMING;
+    
+    /* Close write end of pipe (only child writes) */
+    close(c->data_pipe[1]);
+    c->data_pipe[1] = -1;
+    
+    /* Clean up curl resources in parent (child has its own copy) */
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    free(body);
+    
+    log_write(c, "Parent process: child pid=%d, streaming started", pid);
     
     return 0;
 }
@@ -537,18 +497,45 @@ void stream_client_cancel(stream_client_t *c) {
     if (!c) return;
     log_write(c, "Cancelling stream");
     c->running = 0;
-    /* Note: We do NOT close the pipe here because fdwait() may be active
-       in another coroutine. Closing a fd while fdwait is watching it
-       causes epoll errors. The fdwait has a 100ms timeout so it will
-       wake up quickly anyway. */
+    
+    /* Kill the child process running curl */
+    if (c->curl_pid > 0) {
+        log_write(c, "Killing child process (pid=%d)", c->curl_pid);
+        kill(c->curl_pid, SIGKILL);
+        /* Don't waitpid here — let wait_done or free reap the zombie */
+    }
 }
 
 void stream_client_wait_done(stream_client_t *c) {
     if (!c) return;
-    if (c->curl_running) {
-        pthread_join(c->curl_thread, NULL);
+    
+    /* Wait for child process to exit and reap it */
+    if (c->curl_pid > 0) {
+        int status;
+        log_write(c, "Waiting for child process (pid=%d)", c->curl_pid);
+        waitpid(c->curl_pid, &status, 0);
+        
+        if (WIFEXITED(status)) {
+            int exit_code = WEXITSTATUS(status);
+            if (exit_code == 0) {
+                c->state = CLIENT_STATE_DONE;
+            } else {
+                c->state = CLIENT_STATE_ERROR;
+                c->error_code = exit_code;
+                log_write(c, "Child exited with code %d", exit_code);
+            }
+        } else if (WIFSIGNALED(status)) {
+            c->state = CLIENT_STATE_ERROR;
+            log_write(c, "Child killed by signal %d", WTERMSIG(status));
+        }
+        
+        c->curl_pid = -1;
+        c->done = 1;
+        c->end_time = get_timestamp_ms();
     }
-     if (c->data_pipe[0] >= 0) {
+    
+    /* Close read end of pipe */
+    if (c->data_pipe[0] >= 0) {
         fdclean(c->data_pipe[0]);
         close(c->data_pipe[0]);
         c->data_pipe[0] = -1;
@@ -572,17 +559,8 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
     
     memset(chunk, 0, sizeof(StreamChunk));
     
-    int first_attempt = 1;
-    int wait_for_curl = 0;
-    
-    /* Wait for CURL thread to start (max 5 seconds) */
-    while (!c->curl_running && c->running && wait_for_curl < 50) {
-        msleep(now() + 100);
-        wait_for_curl++;
-    }
-    
-    while (c->running && (c->curl_running || first_attempt)) {
-        /* Try to extract a chunk from the main buffer first */
+    while (c->running) {
+        /* Try to extract a chunk from the parent buffer first */
         int ret = extract_next_chunk(&c->main_buffer, chunk);
         
         if (ret == 1) {
@@ -594,47 +572,49 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
         }
         
         /* No complete chunk yet */
-        first_attempt = 0;
-        
-        if (!c->curl_running && c->main_buffer.len == 0) {
-            /* CURL done and buffer empty */
-            break;
-        }
-        
         if (!wait) {
-            /* Non-blocking mode */
             return 0;
         }
         
         /* Wait for data on the pipe */
-        if (c->running && c->curl_running) {
+        if (c->running) {
             int ev = fdwait(c->data_pipe[0], FDW_IN, now() + 100);
-            if (ev & FDW_ERR) {
-                log_write(c, "fdwait error, forcing pipe cleanup");
-                fdclean(c->data_pipe[0]);   
-                break;
-            }
             
+            /* Always drain the pipe first: FDW_ERR often accompanies FDW_IN
+             * when the child process closes the pipe (EOF + hangup).
+             * If we break on FDW_ERR before reading, we lose the last chunks. */
             if (ev & FDW_IN) {
-                /* Read available data into main buffer */
+                /* Read available data into parent buffer */
                 char buf[4096];
                 ssize_t n = read(c->data_pipe[0], buf, sizeof(buf));
                 if (n > 0) {
                     stream_buffer_append(&c->main_buffer, buf, n);
+                    c->total_bytes += n;
                 } else if (n == 0) {
-                    /* Pipe closed - CURL thread is done */
+                    /* Pipe closed — child process finished */
                     break;
                 } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
                     log_write(c, "read from pipe error: %s", strerror(errno));
                     return -1;
                 }
             }
+            
+            /* Only break on error if no data was readable (ev has FDW_ERR
+             * but not FDW_IN — a real error, not just EOF notification). */
+            if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
+                log_write(c, "fdwait error (no data), forcing pipe cleanup");
+                fdclean(c->data_pipe[0]);
+                break;
+            }
+            /* If fdwait timed out (ev == 0), loop back to check buffer again */
         }
     }
     
-    /* Final attempt after CURL thread finished */
-    int ret = extract_next_chunk(&c->main_buffer, chunk);
-    return (ret == 1) ? 1 : 0;
+    /* Final attempt after pipe closed or cancelled */
+    {
+        int ret = extract_next_chunk(&c->main_buffer, chunk);
+        return (ret == 1) ? 1 : 0;
+    }
 }
 
 coroutine int next_chunk(stream_client_t *c, StreamChunk *chunk) {
