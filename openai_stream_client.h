@@ -66,6 +66,9 @@ typedef struct stream_client {
     int64_t first_token_time;
     int64_t end_time;
     
+    /* Tool schemas (cJSON array of tool definition objects, owned by client) */
+    cJSON *tool_schemas;
+    
     /* Logging */
     FILE *log_fp;
     char *log_filename;
@@ -99,16 +102,34 @@ void stream_client_free(stream_client_t *c);
 void stream_client_set_system_message(stream_client_t *c, const char *message);
 void stream_client_set_temperature(stream_client_t *c, double temp);
 
+/*
+ * Set tool schemas for the request body.
+ * schemas: cJSON Array of tool definition objects, e.g.
+ *   [{"type":"function","function":{"name":"...","description":"...","parameters":{...}}}]
+ * The array is deep-copied internally; caller retains ownership.
+ * Pass NULL to clear.
+ */
+void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas);
+
 /* ============================================================================
  * Streaming API
  * ============================================================================ */
 
 /*
  * Start a streaming chat request.
+ *
+ * messages: cJSON Array of message objects, e.g.
+ *   [{"role":"system","content":"..."}, {"role":"user","content":"..."}]
+ *   May be NULL to send only the configured system message.
+ *   The function copies the array internally; caller retains ownership.
+ *
+ * The full request body is built from client config (model, temperature,
+ * system_message) plus the provided messages, with stream=true.
+ *
  * This launches libcurl in a separate thread.
  * Returns 0 on success, -1 on error.
  */
-int stream_client_start_chat(stream_client_t *c, const char *prompt);
+int stream_client_start_chat(stream_client_t *c, cJSON *messages);
 
 /*
  * Check if there are more chunks available.

@@ -123,7 +123,7 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
     p->assistant.msg = NULL;   /* ownership transferred */
     reset_assistant(p);
     p->state = STATE_IDLE;
-    printf("\n%s\n",cJSON_Print(p->history));
+    fprintf(stderr, "\n%s\n", cJSON_Print(p->history));
     return 0;
 }
 
@@ -325,6 +325,44 @@ const char *llm_parser_get_error(const LlmParser *p)
 {
     if (!p) return NULL;
     return p->error_msg[0] ? p->error_msg : NULL;
+}
+
+LlmParserStatus llm_parser_force_finish(LlmParser *p)
+{
+    if (!p) return LLM_PARSER_ERR_ARG;
+    if (p->state != STATE_IN_ASSISTANT) return LLM_PARSER_IDLE;
+
+    cJSON *msg = p->assistant.msg;
+    if (!msg) {
+        p->state = STATE_IDLE;
+        return LLM_PARSER_FINISHED;
+    }
+
+    /* Finalize accumulated content */
+    if (p->assistant.content_buf && p->assistant.content_len > 0) {
+        cJSON_AddStringToObject(msg, "content", p->assistant.content_buf);
+    } else {
+        /* Only add null if there's nothing else (no reasoning, no tool calls) */
+        if ((!p->assistant.reasoning_buf || p->assistant.reasoning_len == 0) &&
+            !p->tool_call_parser.any_active) {
+            cJSON_AddNullToObject(msg, "content");
+        }
+    }
+
+    /* Finalize accumulated reasoning */
+    if (p->assistant.reasoning_buf && p->assistant.reasoning_len > 0) {
+        cJSON_AddStringToObject(msg, "reasoning_content", p->assistant.reasoning_buf);
+    }
+
+    /* Discard incomplete tool calls — do NOT add them */
+
+    cJSON_AddItemToArray(p->messages_array, msg);
+    p->assistant.msg = NULL;
+    reset_assistant(p);  /* This also resets toolcall_parser, discarding partial tool calls */
+    p->state = STATE_IDLE;
+    fprintf(stderr, "\n%s\n", cJSON_Print(p->history));
+
+    return LLM_PARSER_FINISHED;
 }
 
 int llm_parser_get_last_usage(const LlmParser *p,

@@ -192,13 +192,22 @@ int main(int argc, char *argv[]) {
             continue;
         }
         
+        /* Build messages array: [{"role":"user","content":"..."}] */
+        cJSON *user_msg = cJSON_CreateObject();
+        cJSON_AddStringToObject(user_msg, "role", "user");
+        cJSON_AddStringToObject(user_msg, "content", input);
+        cJSON *messages = cJSON_CreateArray();
+        cJSON_AddItemToArray(messages, user_msg);
+        
         /* Start streaming chat */
         g_streaming = 1;  /* Mark as streaming so Ctrl+C will cancel */
-        if (stream_client_start_chat(client, input) != 0) {
+        if (stream_client_start_chat(client, messages) != 0) {
             fprintf(stderr, "\033[1;31mFailed to start chat\033[0m\n");
+            cJSON_Delete(messages);
             g_streaming = 0;
             continue;
         }
+        cJSON_Delete(messages);  /* Body is copied internally */
         
         /* Launch coroutines to process chunks and monitor for cancellation */
         go(chunk_processor(client));

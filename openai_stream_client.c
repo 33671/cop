@@ -337,6 +337,7 @@ void stream_client_free(stream_client_t *c) {
     free(c->api_endpoint);
     free(c->system_message);
     free(c->log_filename);
+    cJSON_Delete(c->tool_schemas);
     free(c->error_message);
     free(c);
 }
@@ -351,6 +352,12 @@ void stream_client_set_temperature(stream_client_t *c, double temp) {
     if (!c) return;
     c->temperature = temp;
 }
+
+void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas) {
+    if (!c) return;
+    cJSON_Delete(c->tool_schemas);
+    c->tool_schemas = schemas ? cJSON_Duplicate(schemas, 1) : NULL;
+}
 static int debug_callback(CURL *handle, curl_infotype type, char *data, size_t size, void *userptr) {
     if (type == CURLINFO_TEXT || type == CURLINFO_HEADER_IN || type == CURLINFO_HEADER_OUT) {
         fwrite(data, 1, size, stdout);
@@ -359,10 +366,82 @@ static int debug_callback(CURL *handle, curl_infotype type, char *data, size_t s
 }
 
 /* ============================================================================
+ * Request Body Builder
+ * ============================================================================ */
+
+/*
+ * Build a full OpenAI-compatible request body JSON string from client config
+ * and a cJSON messages array.
+ *
+ * messages: cJSON Array of message objects (e.g. [{"role":"user","content":"hi"}])
+ *           May be NULL if no user messages (only system message will be sent).
+ * Returns: malloc'd JSON string, or NULL on error. Caller must free().
+ */
+static char *build_request_body(stream_client_t *c, cJSON *messages) {
+    if (!c) return NULL;
+    
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+    
+    /* Model */
+    cJSON_AddStringToObject(root, "model", c->model ? c->model : "");
+    
+    /* Messages array */
+    cJSON *msgs = cJSON_AddArrayToObject(root, "messages");
+    if (!msgs) { cJSON_Delete(root); return NULL; }
+    
+    /* Prepend system message if configured and not already present
+       as the first message in the caller's array */
+    if (c->system_message && c->system_message[0]) {
+        int has_system = 0;
+        if (messages && cJSON_GetArraySize(messages) > 0) {
+            cJSON *first = cJSON_GetArrayItem(messages, 0);
+            cJSON *role = cJSON_GetObjectItem(first, "role");
+            if (role && cJSON_IsString(role) && strcmp(role->valuestring, "system") == 0) {
+                has_system = 1;
+            }
+        }
+        if (!has_system) {
+            cJSON *sys = cJSON_CreateObject();
+            cJSON_AddStringToObject(sys, "role", "system");
+            cJSON_AddStringToObject(sys, "content", c->system_message);
+            cJSON_AddItemToArray(msgs, sys);
+        }
+    }
+    
+    /* Copy caller's messages into the array */
+    if (messages) {
+        int size = cJSON_GetArraySize(messages);
+        for (int i = 0; i < size; i++) {
+            cJSON *item = cJSON_GetArrayItem(messages, i);
+            cJSON *copy = cJSON_Duplicate(item, 1);
+            if (copy) cJSON_AddItemToArray(msgs, copy);
+        }
+    }
+    
+    /* Tool schemas */
+    if (c->tool_schemas && cJSON_IsArray(c->tool_schemas) &&
+        cJSON_GetArraySize(c->tool_schemas) > 0) {
+        cJSON_AddItemToObject(root, "tools", cJSON_Duplicate(c->tool_schemas, 1));
+        cJSON_AddStringToObject(root, "tool_choice", "auto");
+    }
+    
+    /* Streaming configuration */
+    cJSON_AddBoolToObject(root, "stream", 1);
+    cJSON_AddNumberToObject(root, "temperature", c->temperature);
+    cJSON_AddNumberToObject(root, "max_tokens", 4096);
+    
+    /* Serialize to string */
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return body;
+}
+
+/* ============================================================================
  * Streaming API
  * ============================================================================ */
-int stream_client_start_chat(stream_client_t *c, const char *prompt) {
-    if (!c || !prompt) return -1;
+int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
+    if (!c) return -1;
     
     /* Reset state */
     c->running = 1;
@@ -389,8 +468,10 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
         c->data_pipe[1] = -1;
     }
     yield();
+    
     /* Create new data pipe for this request */
     if (pipe(c->data_pipe) != 0) {
+        c->running = 0;
         return -1;
     }
     
@@ -398,35 +479,12 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
     int flags = fcntl(c->data_pipe[0], F_GETFL, 0);
     fcntl(c->data_pipe[0], F_SETFL, flags | O_NONBLOCK);
     
-    log_write(c, "Starting chat with prompt: %.100s...", prompt);
-    
-    /* Build request body */
-    char escaped[4096];
-    json_escape(prompt, escaped, sizeof(escaped));
-    
-    char *body = malloc(8192);
-    if (!body) return -1;
-    
-    snprintf(body, 8192,
-        "{\"model\":\"deepseek-chat\","
-        "\"messages\":["
-        "{\"role\":\"system\",\"content\":\"You are a helpful assistant\"},"
-        "{\"role\":\"user\",\"content\":\" %s \"}],"
-        "\"thinking\":{\"type\":\"enabled\"},"
-        "\"frequency_penalty\":0,"
-        "\"max_tokens\":4096,"
-        "\"presence_penalty\":0,"
-        "\"response_format\":{\"type\":\"text\"},"
-        "\"stop\":null,"
-        "\"stream\":true,"
-        "\"stream_options\":null,"
-        "\"temperature\":1,"
-        "\"top_p\":1,"
-        "\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"sleep\",\"description\":\"sleep for n secs\",\"parameters\":{\"type\":\"object\",\"properties\":{\"secs\":{\"type\":\"number\",\"description\":\"secs to sleep\"}},\"required\":[\"secs\"]}}}],"
-        "\"tool_choice\":\"auto\","
-        "\"logprobs\":false,"
-        "\"top_logprobs\":null}",
-    escaped);
+    /* Build request body from client config + messages */
+    char *body = build_request_body(c, messages);
+    if (!body) {
+        c->running = 0;
+        return -1;
+    }
     
     log_write(c, "Request body: %s", body);
     
@@ -434,6 +492,7 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
     CURL *curl = curl_easy_init();
     if (!curl) {
         free(body);
+        c->running = 0;
         return -1;
     }
     
@@ -445,12 +504,14 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
-
-    // curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, debug_callback);
-    // curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
-    curl_easy_setopt(curl, CURLOPT_STDERR, stdout);
     
     curl_thread_data_t *td = malloc(sizeof(curl_thread_data_t));
+    if (!td) {
+        curl_easy_cleanup(curl);
+        free(body);
+        c->running = 0;
+        return -1;
+    }
     td->client = c;
     td->curl = curl;
     td->body = body;
@@ -460,6 +521,7 @@ int stream_client_start_chat(stream_client_t *c, const char *prompt) {
         curl_easy_cleanup(curl);
         free(body);
         free(td);
+        c->running = 0;
         return -1;
     }
     
@@ -594,7 +656,17 @@ int stream_client_chat_blocking(stream_client_t *c,
                                  void *user_data) {
     if (!c || !prompt) return -1;
     
-    if (stream_client_start_chat(c, prompt) != 0) {
+    /* Build a single-turn messages array from the prompt string */
+    cJSON *user_msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(user_msg, "role", "user");
+    cJSON_AddStringToObject(user_msg, "content", prompt);
+    cJSON *messages = cJSON_CreateArray();
+    cJSON_AddItemToArray(messages, user_msg);
+    
+    int ret = stream_client_start_chat(c, messages);
+    cJSON_Delete(messages);
+    
+    if (ret != 0) {
         return -1;
     }
     

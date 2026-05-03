@@ -51,6 +51,12 @@ const char *llm_parser_get_error(const LlmParser *p);
 
 const char* llm_parser_status_to_str(LlmParserStatus status);
 
+/* Force-finish the current assistant message (e.g., on cancellation).
+ * Finalizes whatever content/reasoning has been accumulated so far.
+ * Incomplete tool calls are discarded.
+ * Returns LLM_PARSER_FINISHED if a message was finalized, LLM_PARSER_IDLE if none. */
+LlmParserStatus llm_parser_force_finish(LlmParser *p);
+
 /* Get usage from the last finished turn. Returns 0 on success, -1 if none. */
 int llm_parser_get_last_usage(const LlmParser *p,
                               int *prompt, int *completion,

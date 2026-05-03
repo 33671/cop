@@ -99,6 +99,23 @@ target_link_libraries(llm_parser
     openai_sse_parser
     tool_call_parser
 )
+
+# LLM Runtime (high-level orchestration)
+add_library(llm_runtime STATIC llm_runtime.c)
+target_link_libraries(llm_runtime
+    openai_stream_client_lib
+    llm_parser
+    openai_sse_parser
+    cjson
+    mill
+    CURL::libcurl
+    Threads::Threads
+)
+target_include_directories(llm_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/libmill
+    ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+)
 target_link_libraries(openai_stream_client_lib
     openai_sse_parser
     cjson
@@ -120,6 +137,26 @@ target_compile_options(openai_stream_client_async PRIVATE
     -fno-stack-clash-protection 
 )
 target_link_libraries(openai_stream_client_async
+    llm_runtime
+    openai_stream_client_lib
+    openai_sse_parser
+    llm_parser
+    cjson
+    mill
+    CURL::libcurl
+    Threads::Threads
+)
+
+# LLM Runtime test program
+add_executable(llm_runtime_test llm_runtime_test.c utils.c linenoise/linenoise.c)
+target_include_directories(llm_runtime_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/linenoise
+)
+target_compile_options(llm_runtime_test PRIVATE
+    -fno-stack-clash-protection
+)
+target_link_libraries(llm_runtime_test
+    llm_runtime
     openai_stream_client_lib
     openai_sse_parser
     llm_parser
