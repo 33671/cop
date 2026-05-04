@@ -81,6 +81,12 @@ typedef struct llm_runtime llm_runtime_t;
  *   args – parsed JSON arguments object. NULL if parsing failed.
  *
  * The result must be a heap-allocated cJSON value; the runtime will delete it.
+ *
+ * The returned cJSON MUST use one of two formats:
+ *   1. {"type": "text",      "text": "output:xxx\nexit_code:0"}
+ *      → text content is extracted and set as the tool message content string.
+ *   2. {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+ *      → the image_url JSON object is embedded as the tool message content.
  */
 typedef cJSON *(*llm_tool_fn_t)(llm_runtime_t *rt, const cJSON *args);
 
@@ -222,12 +228,14 @@ const char *llm_runtime_get_state_string(const llm_runtime_t *rt);
  *   rt       – runtime handle (supports cooperative cancellation)
  *   cmd      – shell command string (e.g. "ffmpeg -i in.mp4 out.avi")
  *   deadline – -1 for infinite wait, or now()+milliseconds for timeout
- *   output   – [out] malloc'd string of merged stdout+stderr (caller frees)
- *              set to NULL on error
+ *   output   – [out] malloc'd string of merged stdout+stderr (caller frees).
+ *              Always set to a non-NULL string (may be empty "") on return;
+ *              contains any output accumulated before completion/cancel/timeout.
  *   exit_code – [out] child exit status (meaningful only if return == 0)
  *
- * Returns 0 on success, -1 on error / cancelled / timeout.
- * On cancellation or timeout the child is killed via SIGKILL.
+ * Returns 0 on success (child finished naturally), -1 on timeout / cancelled / error.
+ * On timeout or cancellation the child is killed via SIGKILL.
+ * Even on -1, *output holds whatever was captured so far — the caller must free it.
  *
  * Must be called from a libmill coroutine.
  *
@@ -237,12 +245,11 @@ const char *llm_runtime_get_state_string(const llm_runtime_t *rt);
  *       char *out = NULL; int code = 0;
  *       int ret = llm_runtime_popen(rt, "ls -la /tmp", -1, &out, &code);
  *       cJSON *r = cJSON_CreateObject();
+ *       cJSON_AddStringToObject(r, "output", out ? out : "");
+ *       cJSON_AddNumberToObject(r, "exit_code", code);
  *       if (ret != 0) {
- *           cJSON_AddStringToObject(r, "error",
- *               llm_runtime_is_cancelled(rt) ? "cancelled" : "failed");
- *       } else {
- *           cJSON_AddNumberToObject(r, "exit_code", code);
- *           cJSON_AddStringToObject(r, "output", out ? out : "");
+ *           cJSON_AddStringToObject(r, "warning",
+ *               llm_runtime_is_cancelled(rt) ? "cancelled" : "timed out");
  *       }
  *       free(out);
  *       return r;

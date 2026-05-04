@@ -376,6 +376,15 @@ int llm_parser_get_last_usage(const LlmParser *p,
     if (cached)      *cached = p->last_usage.cached_tokens;
     return 0;
 }
+
+int llm_parser_pop_last_message(LlmParser *p) {
+    if (!p || !p->messages_array) return -1;
+    int count = cJSON_GetArraySize(p->messages_array);
+    if (count == 0) return -1;
+    cJSON_DeleteItemFromArray(p->messages_array, count - 1);
+    return count - 1;
+}
+
 const char* llm_parser_status_to_str(LlmParserStatus status) {
     switch (status) {
         /* Errors */

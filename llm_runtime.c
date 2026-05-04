@@ -161,7 +161,11 @@ int llm_runtime_add_user_message(llm_runtime_t *rt, const char *text) {
     return (ret < 0) ? -1 : 0;
 }
 
-/* Add a "{role:\"tool\"}" result message to history. */
+/*
+ * Add a tool result message to history.
+ * content is the value for the "content" field — for text results it's
+ * a plain string; for image_url results it should be the JSON string {"url":"..."}.
+ */
 static void add_tool_result_to_history(llm_runtime_t *rt,
                                         const char *call_id,
                                         const char *content) {
@@ -237,20 +241,51 @@ static int execute_tool_calls(llm_runtime_t *rt,
         if (tool_fn) {
             result = tool_fn(rt, args ? args : cJSON_CreateObject());
         } else {
-            result = cJSON_CreateString("Error: unknown tool or tool not registered");
+            result = cJSON_CreateObject();
+            cJSON_AddStringToObject(result, "type", "text");
+            cJSON_AddStringToObject(result, "text",
+                "Error: unknown tool or tool not registered");
         }
         cJSON_Delete(args);
 
-        /* Serialize result for the content field */
-        char *result_str = cJSON_PrintUnformatted(result);
+        /*
+         * Tool functions return one of two valid JSON formats:
+         *   1. {"type":"text", "text":"output:xxx\nexit_code:0"}
+         *   2. {"type":"image_url", "image_url":{"url":"data:image/png;base64,..."}}
+         *
+         * Build the tool result message's content field accordingly:
+         *   - type=text     → content = the "text" string value
+         *   - type=image_url → content = the "image_url" json object
+         */
+        cJSON *type_item = cJSON_GetObjectItem(result, "type");
+        const char *type_str = (type_item && cJSON_IsString(type_item))
+                               ? type_item->valuestring : NULL;
 
         /* Build tool result message */
         cJSON *tool_msg = cJSON_CreateObject();
         cJSON_AddStringToObject(tool_msg, "role", "tool");
         cJSON_AddStringToObject(tool_msg, "tool_call_id", call_id);
-        cJSON_AddStringToObject(tool_msg, "content",
-                                result_str ? result_str : "");
-        free(result_str);
+
+        if (type_str && strcmp(type_str, "text") == 0) {
+            cJSON *text_item = cJSON_GetObjectItem(result, "text");
+            const char *text_str = (text_item && cJSON_IsString(text_item))
+                                   ? text_item->valuestring : "";
+            cJSON_AddStringToObject(tool_msg, "content", text_str);
+        } else if (type_str && strcmp(type_str, "image_url") == 0) {
+            cJSON *img_obj = cJSON_GetObjectItem(result, "image_url");
+            if (img_obj) {
+                cJSON_AddItemToObject(tool_msg, "content",
+                                      cJSON_Duplicate(img_obj, 1));
+            } else {
+                cJSON_AddStringToObject(tool_msg, "content", "{}");
+            }
+        } else {
+            /* Unknown format — serialize whole result as fallback */
+            char *result_str = cJSON_PrintUnformatted(result);
+            cJSON_AddStringToObject(tool_msg, "content",
+                                    result_str ? result_str : "");
+            free(result_str);
+        }
         cJSON_Delete(result);
 
         llm_parser_add_message(rt->parser, tool_msg);
@@ -321,6 +356,22 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         /* ---- Step 3: Start the HTTP streaming request ---- */
         if (stream_client_start_chat(rt->client, messages) != 0) {
             set_error(rt, "stream_client_start_chat failed");
+
+            /*
+             * If this is a fresh turn (the last message is "user" and
+             * was just added at Step 1), pop it from history.  The user
+             * shouldn't have to see the same message twice when retrying.
+             */
+            int mcount = cJSON_GetArraySize(messages);
+            if (mcount > 0) {
+                cJSON *last = cJSON_GetArrayItem(messages, mcount - 1);
+                cJSON *role = cJSON_GetObjectItem(last, "role");
+                if (role && cJSON_IsString(role) &&
+                    strcmp(role->valuestring, "user") == 0) {
+                    llm_parser_pop_last_message(rt->parser);
+                }
+            }
+
             return -1;
         }
 
@@ -402,11 +453,13 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         stream_client_wait_done(rt->client);
 
         /*
-         * If the stream was cancelled mid-way, force-finish any partial
-         * assistant message (accumulated content/reasoning is preserved,
-         * incomplete tool calls are discarded) and return.
+         * Force-finish partial assistant message if the stream ended
+         * abnormally (cancellation, mid-stream network error, etc.).
+         * Accumulated content/reasoning is preserved; incomplete tool
+         * calls are discarded.
          */
-        if (stream_was_cancelled || llm_runtime_is_cancelled(rt)) {
+        if (stream_was_cancelled || llm_runtime_is_cancelled(rt) ||
+            stream_client_get_state(rt->client) == CLIENT_STATE_ERROR) {
             llm_parser_force_finish(rt->parser);
             if (on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
@@ -563,9 +616,20 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
     }
     out_buf[0] = '\0';
 
+    /*
+     * Hard safety limit: maximum iterations ≈ (deadline_ms / 100) + 100.
+     * Prevents infinite looping if now() or fdwait misbehave.
+     */
+    int64_t max_iter = (deadline >= 0) ? ((deadline - now()) / 100 + 100) : 600;
+    if (max_iter < 100) max_iter = 100;
+    int64_t iter = 0;
+
     while (!finished && !llm_runtime_is_cancelled(rt)) {
-        /* Check deadline */
+        /* Check deadline (both time-based and iteration-based) */
         if (deadline >= 0 && now() >= deadline) {
+            break;
+        }
+        if (++iter > max_iter) {
             break;
         }
 
@@ -576,6 +640,13 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
 
         int ev = fdwait(pipefd[0], FDW_IN, wait_deadline);
 
+        /*
+         * Check deadline again after fdwait returns, in case fdwait
+         * returned early (spurious wakeup / zero timeout).
+         */         
+        if (deadline >= 0 && now() >= deadline) {
+            break;
+        }
         /* Drain data first (FDW_ERR may accompany FDW_IN on EOF) */
         if (ev & FDW_IN) {
             char buf[4096];
@@ -645,18 +716,13 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
     fdclean(pipefd[0]);
     close(pipefd[0]);
 
-    if (finished) {
-        /* Null-terminate output */
-        if (out_len > 0 && out_buf[out_len - 1] == '\n') {
-            out_buf[--out_len] = '\0';  /* strip trailing newline */
-        }
-        *output    = out_buf;
-        *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        return 0;
+    /* Strip trailing newline if present */
+    if (out_len > 0 && out_buf[out_len - 1] == '\n') {
+        out_buf[--out_len] = '\0';
     }
 
-    /* Cancelled, timed out, or error */
-    free(out_buf);
-    *output = NULL;
-    return -1;
+    /* Always return accumulated output — even on timeout/cancellation */
+    *output    = out_buf;
+    *exit_code = finished && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return finished ? 0 : -1;
 }

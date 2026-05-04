@@ -68,6 +68,10 @@ typedef struct stream_client {
     /* Tool schemas (cJSON array of tool definition objects, owned by client) */
     cJSON *tool_schemas;
     
+    /* Retry configuration */
+    int max_retries;                 /* max retry attempts (default 3) */
+    int retry_delay_ms;              /* delay between retries in ms (default 1000) */
+    
     /* Logging */
     FILE *log_fp;
     char *log_filename;
@@ -110,6 +114,14 @@ void stream_client_set_temperature(stream_client_t *c, double temp);
  */
 void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas);
 
+/*
+ * Configure retry behaviour.
+ * max_retries: 0 = no retries, -1 = use default (3)
+ * delay_ms: milliseconds between retries (default 1000)
+ */
+void stream_client_set_max_retries(stream_client_t *c, int max_retries);
+void stream_client_set_retry_delay(stream_client_t *c, int delay_ms);
+
 /* ============================================================================
  * Streaming API
  * ============================================================================ */
@@ -126,9 +138,14 @@ void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas);
  * system_message) plus the provided messages, with stream=true.
  *
  * This forks a child process running libcurl via mfork().
- * Returns 0 on success, -1 on error.
+ * On HTTP 5xx / 429 / network errors, the request is retried up to
+ * c->max_retries times (with c->retry_delay_ms between attempts).
+ * All response data is buffered into main_buffer before returning.
+ *
+ * Must be called from a libmill coroutine.
+ * Returns 0 on success, -1 on error (including after all retries exhausted).
  */
-int stream_client_start_chat(stream_client_t *c, cJSON *messages);
+coroutine int stream_client_start_chat(stream_client_t *c, cJSON *messages);
 
 /*
  * Check if there are more chunks available.

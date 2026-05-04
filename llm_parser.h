@@ -62,4 +62,10 @@ int llm_parser_get_last_usage(const LlmParser *p,
                               int *prompt, int *completion,
                               int *total, int *cached);
 
+/*
+ * Remove and free the last message from the history array.
+ * Returns the number of remaining messages, or -1 if history is empty.
+ */
+int llm_parser_pop_last_message(LlmParser *p);
+
 #endif /* LLM_PARSER_H */

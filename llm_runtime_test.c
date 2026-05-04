@@ -58,17 +58,19 @@ static cJSON *tool_sleep(llm_runtime_t *rt, const cJSON *args) {
         if (llm_runtime_is_cancelled(rt)) {
             printf("  [tool] cancelled!\n");
             cJSON *result = cJSON_CreateObject();
-            cJSON_AddStringToObject(result, "status", "cancelled");
-            cJSON_AddNumberToObject(result, "slept_for", slept);
+            cJSON_AddStringToObject(result, "type", "text");
+            cJSON_AddStringToObject(result, "text", "cancelled");
             return result;
         }
         usleep((useconds_t)(step * 1000000));
         slept += step;
     }
 
+    char buf[256];
+    snprintf(buf, sizeof(buf), "done, slept for %.1f seconds", secs);
     cJSON *result = cJSON_CreateObject();
-    cJSON_AddStringToObject(result, "status", "done");
-    cJSON_AddNumberToObject(result, "slept_for", secs);
+    cJSON_AddStringToObject(result, "type", "text");
+    cJSON_AddStringToObject(result, "text", buf);
     return result;
 }
 
@@ -80,10 +82,13 @@ static cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
     const char *cmd = (cmd_json && cJSON_IsString(cmd_json))
                       ? cmd_json->valuestring : NULL;
 
+    cJSON *result = cJSON_CreateObject();
+    cJSON_AddStringToObject(result, "type", "text");
+
     if (!cmd || !*cmd) {
-        cJSON *r = cJSON_CreateObject();
-        cJSON_AddStringToObject(r, "error", "missing 'cmd' argument");
-        return r;
+        cJSON_AddStringToObject(result, "text",
+            "error: missing 'cmd' argument");
+        return result;
     }
 
     printf("\n  [tool] running: %s\n", cmd);
@@ -96,24 +101,30 @@ static cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
      * if the runtime is cancelled. */
     int ret = llm_runtime_popen(rt, cmd, now() + 30000, &output, &exit_code);
 
-    cJSON *result = cJSON_CreateObject();
-    if (ret != 0) {
-        cJSON_AddStringToObject(result, "error",
-            llm_runtime_is_cancelled(rt) ? "cancelled" : "command failed or timed out");
-    } else {
-        cJSON_AddNumberToObject(result, "exit_code", exit_code);
-        if (output && *output) {
-            /* Truncate very long output */
-            size_t len = strlen(output);
-            if (len > 4000) {
-                output[4000] = '\0';
-                strcat(output, "... [truncated]");
-            }
-            cJSON_AddStringToObject(result, "output", output);
-        } else {
-            cJSON_AddStringToObject(result, "output", "(no output)");
+    /* Truncate very long output (both success and failure paths) */
+    if (output && *output) {
+        size_t len = strlen(output);
+        if (len > 4000) {
+            output[4000] = '\0';
+            strcat(output, "... [truncated]");
         }
     }
+
+    /* Build text field: "output:<output>\nexit_code:<code>" */
+    size_t text_len = 128 + (output ? strlen(output) : 0);
+    char *text_buf = malloc(text_len);
+    if (ret != 0) {
+        const char *reason = llm_runtime_is_cancelled(rt)
+                             ? "cancelled" : "timed out";
+        snprintf(text_buf, text_len,
+                 "output:%s\nexit_code:%d\n[WARNING: command %s — partial output above]",
+                 output ? output : "(no output)", exit_code, reason);
+    } else {
+        snprintf(text_buf, text_len, "output:%s\nexit_code:%d",
+                 output ? output : "(no output)", exit_code);
+    }
+    cJSON_AddStringToObject(result, "text", text_buf);
+    free(text_buf);
     free(output);
     return result;
 }
@@ -169,10 +180,12 @@ static void on_runtime_event(llm_runtime_t *rt,
         if (data) {
             cJSON *p = cJSON_GetObjectItem(data, "prompt_tokens");
             cJSON *c = cJSON_GetObjectItem(data, "completion_tokens");
+            cJSON *h = cJSON_GetObjectItem(data, "cached_tokens");
             cJSON *t = cJSON_GetObjectItem(data, "total_tokens");
-            printf("\n\033[90m[Usage: prompt=%d, completion=%d, total=%d]\033[0m\n",
+            printf("\n\033[90m[Usage: prompt=%d, completion=%d, cached=%d, total=%d]\033[0m\n",
                    p && cJSON_IsNumber(p) ? p->valueint : 0,
                    c && cJSON_IsNumber(c) ? c->valueint : 0,
+                   h && cJSON_IsNumber(h) ? h->valueint : 0,
                    t && cJSON_IsNumber(t) ? t->valueint : 0);
         }
         break;

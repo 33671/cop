@@ -152,6 +152,8 @@ stream_client_t *stream_client_new(const char *api_key,
     c->curl_pid = -1;
     c->data_pipe[0] = -1;
     c->data_pipe[1] = -1;
+    c->max_retries = 3;
+    c->retry_delay_ms = 1000;
     
     /* Initialize parent process buffer */
     if (stream_buffer_init(&c->main_buffer) != 0) {
@@ -251,6 +253,16 @@ void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas) {
     c->tool_schemas = schemas ? cJSON_Duplicate(schemas, 1) : NULL;
 }
 
+void stream_client_set_max_retries(stream_client_t *c, int max_retries) {
+    if (!c) return;
+    c->max_retries = (max_retries >= 0) ? max_retries : 3;
+}
+
+void stream_client_set_retry_delay(stream_client_t *c, int delay_ms) {
+    if (!c) return;
+    c->retry_delay_ms = (delay_ms >= 0) ? delay_ms : 1000;
+}
+
 /* ============================================================================
  * Request Body Builder
  * ============================================================================ */
@@ -326,10 +338,31 @@ static char *build_request_body(stream_client_t *c, cJSON *messages) {
 /* ============================================================================
  * Streaming API
  * ============================================================================ */
-int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
+
+/* Child process exit codes used to communicate error type to parent. */
+#define CHILD_EXIT_OK          0   /* HTTP 2xx — success              */
+#define CHILD_EXIT_NET_ERR     1   /* curl/network error — retryable  */
+#define CHILD_EXIT_HTTP_4XX    2   /* HTTP 4xx — not retryable        */
+#define CHILD_EXIT_HTTP_5XX    3   /* HTTP 5xx — retryable            */
+#define CHILD_EXIT_HTTP_429    4   /* HTTP 429 — retryable (rate limit) */
+
+/*
+ * Check if buffered data looks like an SSE stream (starts with "data:"
+ * after optional leading whitespace).  Returns 1 if yes, 0 otherwise.
+ */
+static int buffer_looks_like_sse(stream_buffer_t *buf) {
+    const char *p = buf->data;
+    size_t rem = buf->len;
+    while (rem > 0 && (*p == '\n' || *p == '\r' || *p == ' ')) {
+        p++; rem--;
+    }
+    return (rem >= 5 && strncmp(p, "data:", 5) == 0);
+}
+
+coroutine int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
     if (!c) return -1;
-    
-    /* Reset state */
+
+    /* ── Reset state ──────────────────────────────────────────────── */
     c->running = 1;
     c->done = 0;
     c->error_code = 0;
@@ -338,18 +371,18 @@ int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
     c->first_token_time = 0;
     c->end_time = 0;
     c->state = CLIENT_STATE_CONNECTING;
-    
+
     /* Clear parent buffer */
     c->main_buffer.len = 0;
     if (c->main_buffer.data) c->main_buffer.data[0] = '\0';
-    
+
     /* Reap any previous zombie child */
     if (c->curl_pid > 0) {
         int status;
         waitpid(c->curl_pid, &status, WNOHANG);
         c->curl_pid = -1;
     }
-    
+
     /* Close any existing pipe from previous request */
     if (c->data_pipe[0] >= 0) {
         fdclean(c->data_pipe[0]);
@@ -361,130 +394,244 @@ int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
         c->data_pipe[1] = -1;
     }
     yield();
-    
-    /* Create new data pipe for this request */
-    if (pipe(c->data_pipe) != 0) {
-        c->running = 0;
-        return -1;
-    }
-    
-    /* Make read end non-blocking for fdwait */
-    int flags = fcntl(c->data_pipe[0], F_GETFL, 0);
-    fcntl(c->data_pipe[0], F_SETFL, flags | O_NONBLOCK);
-    
-    /* Build request body from client config + messages */
+
+    /* Build request body once (same for every retry) */
     char *body = build_request_body(c, messages);
     if (!body) {
-        close(c->data_pipe[0]);
-        close(c->data_pipe[1]);
-        c->data_pipe[0] = -1;
-        c->data_pipe[1] = -1;
         c->running = 0;
         return -1;
     }
-    
     log_write(c, "Request body: %s", body);
-    
-    /* Setup CURL */
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        free(body);
-        close(c->data_pipe[0]);
-        close(c->data_pipe[1]);
-        c->data_pipe[0] = -1;
-        c->data_pipe[1] = -1;
-        c->running = 0;
-        return -1;
-    }
-    
-    curl_easy_setopt(curl, CURLOPT_URL, c->api_endpoint);
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
-    
-    /* Set up write callback (data -> pipe) */
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, client_curl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, c);
-    
-    /* No progress/xfer callback needed — we use kill() for cancellation */
-    
-    /* Set up HTTP headers */
-    struct curl_slist *headers = NULL;
-    char auth[512];
-    snprintf(auth, sizeof(auth), "Authorization: Bearer %s", c->api_key);
-    headers = curl_slist_append(headers, auth);
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, "Accept: application/json");
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    
-    /* Fork a child process to run the HTTP request */
-    pid_t pid = mfork();
-    if (pid < 0) {
-        /* Fork failed */
-        log_write(c, "mfork failed: %s", strerror(errno));
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
-        free(body);
-        close(c->data_pipe[0]);
-        close(c->data_pipe[1]);
-        c->data_pipe[0] = -1;
-        c->data_pipe[1] = -1;
-        c->running = 0;
-        return -1;
-    }
-    
-    if (pid == 0) {
-        /* ================================================================
-         * CHILD PROCESS — runs curl, writes HTTP stream to pipe, then exits
-         * ================================================================ */
-        
-        /* Close read end of pipe (only parent reads) */
-        close(c->data_pipe[0]);
-        
-        log_write(c, "Child process: starting CURL perform (pid=%d)", getpid());
-        c->state = CLIENT_STATE_STREAMING;
-        
-        CURLcode res = curl_easy_perform(curl);
-        
-        if (res != CURLE_OK) {
-            log_write(c, "Child process: CURL error: %s", curl_easy_strerror(res));
-        } else {
-            log_write(c, "Child process: CURL completed successfully");
+
+    int attempt;
+    int success = 0;
+
+    /* ── Retry loop ───────────────────────────────────────────────── */
+    for (attempt = 0; attempt <= c->max_retries; attempt++) {
+
+        /* Cancellation check */
+        if (!c->running) break;
+
+        if (attempt > 0) {
+            fprintf(stderr, "[retry %d/%d] waiting %dms...\n",
+                    attempt, c->max_retries, c->retry_delay_ms);
+            msleep(now() + c->retry_delay_ms);
+
+            if (!c->running) break;  /* cancelled during sleep */
+
+            /* Discard any error-response data from the failed attempt */
+            c->main_buffer.len = 0;
+            if (c->main_buffer.data) c->main_buffer.data[0] = '\0';
+            c->total_bytes = 0;
         }
-        
-        /* Close write end of pipe → signals EOF to parent */
+
+        /* ── Create pipe ───────────────────────────────────────── */
+        if (pipe(c->data_pipe) != 0) break;
+        int flags = fcntl(c->data_pipe[0], F_GETFL, 0);
+        fcntl(c->data_pipe[0], F_SETFL, flags | O_NONBLOCK);
+
+        /* ── Setup CURL ────────────────────────────────────────── */
+        CURL *curl = curl_easy_init();
+        if (!curl) {
+            close(c->data_pipe[0]); close(c->data_pipe[1]);
+            c->data_pipe[0] = -1; c->data_pipe[1] = -1;
+            break;
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, c->api_endpoint);
+        curl_easy_setopt(curl, CURLOPT_POST, 1L);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1800L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 5L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, client_curl_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, c);
+
+        struct curl_slist *headers = NULL;
+        char auth[512];
+        snprintf(auth, sizeof(auth), "Authorization: Bearer %s", c->api_key);
+        headers = curl_slist_append(headers, auth);
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        headers = curl_slist_append(headers, "Accept: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+        /* ── Fork ──────────────────────────────────────────────── */
+        pid_t pid = mfork();
+        if (pid < 0) {
+            log_write(c, "mfork failed: %s", strerror(errno));
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+            close(c->data_pipe[0]); close(c->data_pipe[1]);
+            c->data_pipe[0] = -1; c->data_pipe[1] = -1;
+            break;
+        }
+
+        if (pid == 0) {
+            /* ── CHILD: run curl, report error type via exit code ── */
+            close(c->data_pipe[0]);
+            log_write(c, "Child: curl perform (pid=%d, attempt=%d)",
+                      getpid(), attempt);
+            c->state = CLIENT_STATE_STREAMING;
+
+            CURLcode res = curl_easy_perform(curl);
+            int child_exit;
+
+            if (res != CURLE_OK) {
+                log_write(c, "Child: curl error: %s", curl_easy_strerror(res));
+                child_exit = CHILD_EXIT_NET_ERR;
+            } else {
+                long http_code = 0;
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+                log_write(c, "Child: HTTP %ld", http_code);
+                if (http_code >= 200 && http_code < 300) {
+                    child_exit = CHILD_EXIT_OK;
+                } else if (http_code == 429) {
+                    child_exit = CHILD_EXIT_HTTP_429;
+                } else if (http_code >= 500) {
+                    child_exit = CHILD_EXIT_HTTP_5XX;
+                } else {
+                    child_exit = CHILD_EXIT_HTTP_4XX;
+                }
+            }
+
+            close(c->data_pipe[1]);
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+            log_write(c, "Child: _exit(%d)", child_exit);
+            _exit(child_exit);
+        }
+
+        /* ── PARENT: peek at first data to confirm it is SSE ──────── */
+        c->curl_pid = pid;
         close(c->data_pipe[1]);
-        
+        c->data_pipe[1] = -1;
+
+        log_write(c, "Parent: peeking at pipe from child pid=%d", pid);
+
+        /*
+         * Read data until we either:
+         *   a) See a "data:" prefix  → SSE stream confirmed, leave pipe
+         *                               open so extract_chunk_internal can
+         *                               continue reading in real time.
+         *   b) Pipe EOF / hangup      → no valid SSE arrived; reap child,
+         *                               check exit code, possibly retry.
+         */
+        int looks_sse = 0;
+        while (c->running && !looks_sse) {
+            int ev = fdwait(c->data_pipe[0], FDW_IN, now() + 100);
+
+            if (ev & FDW_IN) {
+                char buf[4096];
+                ssize_t n = read(c->data_pipe[0], buf, sizeof(buf));
+                if (n > 0) {
+                    stream_buffer_append(&c->main_buffer, buf, n);
+                    c->total_bytes += n;
+                    if (buffer_looks_like_sse(&c->main_buffer)) {
+                        looks_sse = 1;
+                        break;
+                    }
+                } else if (n == 0) {
+                    break;  /* EOF — no SSE seen */
+                } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    log_write(c, "read error: %s", strerror(errno));
+                    break;
+                }
+            }
+            if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
+                break;  /* hangup — no SSE seen */
+            }
+        }
+
+        if (looks_sse) {
+            /* SSE stream confirmed — leave pipe open for real-time streaming.
+             * extract_chunk_internal will continue reading from the pipe. */
+            c->state = CLIENT_STATE_STREAMING;
+            success = 1;
+            log_write(c, "Parent: SSE stream confirmed (attempt %d)", attempt);
+            /* Parent's curl copy cleanup (child has its own) */
+            curl_slist_free_all(headers);
+            curl_easy_cleanup(curl);
+            break;
+        }
+
+        /*
+         * No SSE data arrived — the response was an error (HTTP 4xx/5xx,
+         * network failure, etc.) or the pipe closed before any data.
+         * Close the pipe, reap the child, and decide whether to retry.
+         */
+        fdclean(c->data_pipe[0]);
+        close(c->data_pipe[0]);
+        c->data_pipe[0] = -1;
+
+        int status = 0;
+        waitpid(pid, &status, 0);
+        c->curl_pid = -1;
+        c->done = 1;
+        c->end_time = get_timestamp_ms();
+
+        /* Clean up parent's curl copy */
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
-        free(body);
-        
-        log_write(c, "Child process: exiting (status=%d)", res == CURLE_OK ? 0 : 1);
-        _exit(res == CURLE_OK ? 0 : 1);
+
+        /* ── Decide: retry or finish? ──────────────────────────── */
+        if (WIFEXITED(status)) {
+            int child_exit = WEXITSTATUS(status);
+
+            int retryable = 0;
+            const char *desc = "unknown";
+            switch (child_exit) {
+            case CHILD_EXIT_OK:
+                /* HTTP 2xx but no SSE data?  Shouldn't happen — treat
+                 * as non-retryable empty response. */
+                desc = "empty response"; break;
+            case CHILD_EXIT_NET_ERR:
+                retryable = 1; desc = "network error"; break;
+            case CHILD_EXIT_HTTP_5XX:
+                retryable = 1; desc = "HTTP server error"; break;
+            case CHILD_EXIT_HTTP_429:
+                retryable = 1; desc = "HTTP 429 rate limit"; break;
+            case CHILD_EXIT_HTTP_4XX:
+                retryable = 0; desc = "HTTP client error"; break;
+            }
+
+            if (!retryable) {
+                fprintf(stderr, "[error] %s (not retryable)\n", desc);
+                c->state = CLIENT_STATE_ERROR;
+                c->error_code = child_exit;
+                break;
+            }
+
+            if (attempt >= c->max_retries) {
+                fprintf(stderr, "[error] max retries (%d) exhausted — %s\n",
+                        c->max_retries, desc);
+                c->state = CLIENT_STATE_ERROR;
+                c->error_code = child_exit;
+                break;
+            }
+
+            fprintf(stderr, "[retry %d/%d] %s\n",
+                    attempt + 1, c->max_retries, desc);
+
+        } else {
+            /* Child killed by signal — not retryable */
+            log_write(c, "Parent: child killed by signal %d", WTERMSIG(status));
+            c->state = CLIENT_STATE_ERROR;
+            break;
+        }
     }
-    
-    /* ================================================================
-     * PARENT PROCESS — tracks child, reads from pipe via fdwait()
-     * ================================================================ */
-    
-    c->curl_pid = pid;
-    c->state = CLIENT_STATE_STREAMING;
-    
-    /* Close write end of pipe (only child writes) */
-    close(c->data_pipe[1]);
-    c->data_pipe[1] = -1;
-    
-    /* Clean up curl resources in parent (child has its own copy) */
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
+
     free(body);
-    
-    log_write(c, "Parent process: child pid=%d, streaming started", pid);
-    
+
+    if (!success) {
+        c->running = 0;
+        return -1;
+    }
+
     return 0;
 }
 
@@ -508,13 +655,13 @@ void stream_client_cancel(stream_client_t *c) {
 
 void stream_client_wait_done(stream_client_t *c) {
     if (!c) return;
-    
+
     /* Wait for child process to exit and reap it */
     if (c->curl_pid > 0) {
         int status;
         log_write(c, "Waiting for child process (pid=%d)", c->curl_pid);
         waitpid(c->curl_pid, &status, 0);
-        
+
         if (WIFEXITED(status)) {
             int exit_code = WEXITSTATUS(status);
             if (exit_code == 0) {
@@ -528,12 +675,12 @@ void stream_client_wait_done(stream_client_t *c) {
             c->state = CLIENT_STATE_ERROR;
             log_write(c, "Child killed by signal %d", WTERMSIG(status));
         }
-        
+
         c->curl_pid = -1;
         c->done = 1;
         c->end_time = get_timestamp_ms();
     }
-    
+
     /* Close read end of pipe */
     if (c->data_pipe[0] >= 0) {
         fdclean(c->data_pipe[0]);
@@ -551,40 +698,41 @@ void stream_client_wait_done(stream_client_t *c) {
  * ============================================================================ */
 
 /*
- * Internal: Wait for data and extract next chunk.
+ * Internal: Extract next SSE chunk with real-time pipe reading.
+ * start_chat() confirmed the stream is valid SSE and left the pipe open;
+ * we continue reading incrementally and parsing chunks as they arrive.
  * Returns: 1 = got chunk, 0 = no more data, -1 = error
  */
 coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int wait) {
     if (!c || !chunk) return -1;
-    
+
     memset(chunk, 0, sizeof(StreamChunk));
-    
+
     while (c->running) {
-        /* Try to extract a chunk from the parent buffer first */
+        /* Try to extract a chunk from the buffer first */
         int ret = extract_next_chunk(&c->main_buffer, chunk);
-        
         if (ret == 1) {
-            if (c->first_token_time == 0 && (chunk->content || chunk->reasoning_content))
+            if (c->first_token_time == 0 &&
+                (chunk->content || chunk->reasoning_content))
                 c->first_token_time = get_timestamp_ms();
             return 1;
         } else if (ret == -1) {
             return -1;
         }
-        
+
         /* No complete chunk yet */
         if (!wait) {
             return 0;
         }
-        
-        /* Wait for data on the pipe */
+
+        /* Wait for more data on the pipe */
         if (c->running) {
             int ev = fdwait(c->data_pipe[0], FDW_IN, now() + 100);
-            
+
             /* Always drain the pipe first: FDW_ERR often accompanies FDW_IN
              * when the child process closes the pipe (EOF + hangup).
              * If we break on FDW_ERR before reading, we lose the last chunks. */
             if (ev & FDW_IN) {
-                /* Read available data into parent buffer */
                 char buf[4096];
                 ssize_t n = read(c->data_pipe[0], buf, sizeof(buf));
                 if (n > 0) {
@@ -598,7 +746,7 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
                     return -1;
                 }
             }
-            
+
             /* Only break on error if no data was readable (ev has FDW_ERR
              * but not FDW_IN — a real error, not just EOF notification). */
             if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
@@ -609,7 +757,7 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
             /* If fdwait timed out (ev == 0), loop back to check buffer again */
         }
     }
-    
+
     /* Final attempt after pipe closed or cancelled */
     {
         int ret = extract_next_chunk(&c->main_buffer, chunk);
