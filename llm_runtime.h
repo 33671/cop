@@ -83,7 +83,7 @@ typedef struct llm_runtime llm_runtime_t;
  * The result must be a heap-allocated cJSON value; the runtime will delete it.
  *
  * The returned cJSON MUST use one of two formats:
- *   1. {"type": "text",      "text": "output:xxx\nexit_code:0"}
+ *   1. {"type": "text",      "text":"Output:\nxxx\nExit_code:0"}
  *      → text content is extracted and set as the tool message content string.
  *   2. {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
  *      → the image_url JSON object is embedded as the tool message content.
@@ -167,6 +167,14 @@ void llm_runtime_set_tool_schema(llm_runtime_t *rt, const cJSON *schemas);
  * Returns 0 on success, -1 on error.
  */
 int llm_runtime_add_user_message(llm_runtime_t *rt, const char *text);
+
+/*
+ * Add an arbitrary message object (user/assistant/tool/system) to history.
+ * The message is deep-copied; caller retains ownership.
+ * Used for restoring conversations from persistent storage.
+ * Returns 0 on success, -1 on error.
+ */
+int llm_runtime_add_message(llm_runtime_t *rt, const cJSON *msg);
 
 /* ============================================================================
  * Streaming Send (coroutine)

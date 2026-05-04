@@ -161,6 +161,13 @@ int llm_runtime_add_user_message(llm_runtime_t *rt, const char *text) {
     return (ret < 0) ? -1 : 0;
 }
 
+int llm_runtime_add_message(llm_runtime_t *rt, const cJSON *msg) {
+    if (!rt || !msg) return -1;
+
+    LlmParserStatus ret = llm_parser_add_message(rt->parser, msg);
+    return (ret < 0) ? -1 : 0;
+}
+
 /*
  * Add a tool result message to history.
  * content is the value for the "content" field — for text results it's
@@ -219,8 +226,11 @@ static int execute_tool_calls(llm_runtime_t *rt,
             add_tool_result_to_history(rt, call_id,
                 "{\"error\":\"User has cancelled\"}");
             if (on_chunk) {
-                on_chunk(rt, LLM_RT_EVENT_TOOL_RESULT,
-                         name, NULL, user_data);
+                cJSON *info = cJSON_CreateObject();
+                cJSON_AddStringToObject(info, "name", name);
+                cJSON_AddStringToObject(info, "preview", "cancelled");
+                on_chunk(rt, LLM_RT_EVENT_TOOL_RESULT, NULL, info, user_data);
+                cJSON_Delete(info);
             }
             executed++;
             continue;
@@ -250,7 +260,7 @@ static int execute_tool_calls(llm_runtime_t *rt,
 
         /*
          * Tool functions return one of two valid JSON formats:
-         *   1. {"type":"text", "text":"output:xxx\nexit_code:0"}
+         *   1. {"type":"text", "text":"Output:\nxxx\nExit_code:0"}
          *   2. {"type":"image_url", "image_url":{"url":"data:image/png;base64,..."}}
          *
          * Build the tool result message's content field accordingly:
@@ -289,14 +299,40 @@ static int execute_tool_calls(llm_runtime_t *rt,
         cJSON_Delete(result);
 
         llm_parser_add_message(rt->parser, tool_msg);
-        cJSON_Delete(tool_msg);
 
-        /* Notify user */
+        /* Build tool result preview for callback */
         if (on_chunk) {
-            on_chunk(rt, LLM_RT_EVENT_TOOL_RESULT, name, NULL, user_data);
+            const char *preview_text = "";
+            cJSON *preview_item = cJSON_GetObjectItem(tool_msg, "content");
+            if (preview_item && cJSON_IsString(preview_item)) {
+                preview_text = preview_item->valuestring;
+            }
+
+            /* Truncate to first 200 chars / first 3 lines */
+            char preview[256];
+            size_t plen = strlen(preview_text);
+            int lines = 0;
+            size_t e = 0;
+            for (size_t i = 0; i < plen && i < 200 && lines < 3; i++) {
+                preview[e++] = preview_text[i];
+                if (preview_text[i] == '\n') lines++;
+            }
+            if (e < plen) {
+                memcpy(preview + e, "...", 3);
+                e += 3;
+            }
+            preview[e] = '\0';
+
+            cJSON *info = cJSON_CreateObject();
+            cJSON_AddStringToObject(info, "name", name);
+            cJSON_AddStringToObject(info, "preview", preview);
+            on_chunk(rt, LLM_RT_EVENT_TOOL_RESULT, NULL, info, user_data);
+            cJSON_Delete(info);
         }
 
+        cJSON_Delete(tool_msg);
         executed++;
+
     }
 
     return executed;

@@ -152,17 +152,55 @@ target_compile_options(isocline PRIVATE
     -Wall -Wextra -Wno-unused-function -Wno-unused-parameter
 )
 
+# SQLite3 (amalgamation)
+add_library(sqlite3 STATIC sqlite/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
+)
+target_compile_options(sqlite3 PRIVATE
+    -Wall -Wextra -Wno-unused-function -Wno-unused-parameter
+    -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION
+)
+
+# History database (SQLite-backed session/message storage)
+add_library(history_db STATIC history_db.c)
+target_link_libraries(history_db
+    sqlite3
+    cjson
+)
+target_include_directories(history_db PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
+)
+
+# Tool functions (example tool implementations)
+add_library(tool_functions STATIC tool_functions.c)
+target_link_libraries(tool_functions
+    isocline
+    llm_runtime
+    cjson
+)
+target_include_directories(tool_functions PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/isocline/include
+)
+
 # LLM Runtime test program
 add_executable(llm_runtime_test llm_runtime_test.c utils.c)
 target_compile_options(llm_runtime_test PRIVATE
     -fno-stack-clash-protection
 )
 target_link_libraries(llm_runtime_test
+    history_db
+    tool_functions
     isocline
     llm_runtime
     openai_stream_client_lib
     openai_sse_parser
     llm_parser
+    sqlite3
     cjson
     mill
     CURL::libcurl

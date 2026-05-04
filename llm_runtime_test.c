@@ -20,6 +20,8 @@
 #include <curl/curl.h>
 #include "utils.h"
 #include "llm_runtime.h"
+#include "tool_functions.h"
+#include "history_db.h"
 #include "libmill/libmill.h"
 #include "isocline/include/isocline.h"
 
@@ -27,6 +29,10 @@
  * Global State
  * ============================================================================ */
 static llm_runtime_t *g_rt = NULL;  /* set in main() for signal handler access */
+static history_db_t  *g_db = NULL;  /* history database handle */
+static int64_t        g_session_id = -1;  /* current session id */
+static int            g_saved_count = 0;  /* messages saved for current session */
+static char           g_cwd[4096];        /* working directory for session scope */
 
 void sigint_handler(int sig) {
     (void)sig;
@@ -41,97 +47,26 @@ void sigint_handler(int sig) {
     }
 }
 
-/* ============================================================================
- * Example Tool: sleep
- * ============================================================================ */
-static cJSON *tool_sleep(llm_runtime_t *rt, const cJSON *args) {
-    double secs = 1.0;
-    cJSON *s = cJSON_GetObjectItem(args, "secs");
-    if (s && cJSON_IsNumber(s)) secs = s->valuedouble;
-
-    printf("\n  [tool] sleeping for %.1f seconds...\n", secs);
-
-    /* Sleep in small increments so we can detect cancellation */
-    const double step = 0.1;
-    double slept = 0;
-    while (slept < secs) {
-        if (llm_runtime_is_cancelled(rt)) {
-            printf("  [tool] cancelled!\n");
-            cJSON *result = cJSON_CreateObject();
-            cJSON_AddStringToObject(result, "type", "text");
-            cJSON_AddStringToObject(result, "text", "cancelled");
-            return result;
-        }
-        usleep((useconds_t)(step * 1000000));
-        slept += step;
-    }
-
-    char buf[256];
-    snprintf(buf, sizeof(buf), "done, slept for %.1f seconds", secs);
-    cJSON *result = cJSON_CreateObject();
-    cJSON_AddStringToObject(result, "type", "text");
-    cJSON_AddStringToObject(result, "text", buf);
-    return result;
-}
-
-/* ============================================================================
- * Example Tool: shell (async CLI runner via llm_runtime_popen)
- * ============================================================================ */
-static cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
-    cJSON *cmd_json = cJSON_GetObjectItem(args, "cmd");
-    const char *cmd = (cmd_json && cJSON_IsString(cmd_json))
-                      ? cmd_json->valuestring : NULL;
-
-    cJSON *result = cJSON_CreateObject();
-    cJSON_AddStringToObject(result, "type", "text");
-
-    if (!cmd || !*cmd) {
-        cJSON_AddStringToObject(result, "text",
-            "error: missing 'cmd' argument");
-        return result;
-    }
-
-    printf("\n  [tool] running: %s\n", cmd);
-
-    char *output = NULL;
-    int exit_code = 0;
-
-    /* llm_runtime_popen is coroutine-friendly: uses mfork + fdwait.
-     * It does NOT block other coroutines, and is automatically killed
-     * if the runtime is cancelled. */
-    int ret = llm_runtime_popen(rt, cmd, now() + 30000, &output, &exit_code);
-
-    /* Truncate very long output (both success and failure paths) */
-    if (output && *output) {
-        size_t len = strlen(output);
-        if (len > 4000) {
-            output[4000] = '\0';
-            strcat(output, "... [truncated]");
-        }
-    }
-
-    /* Build text field: "output:<output>\nexit_code:<code>" */
-    size_t text_len = 128 + (output ? strlen(output) : 0);
-    char *text_buf = malloc(text_len);
-    if (ret != 0) {
-        const char *reason = llm_runtime_is_cancelled(rt)
-                             ? "cancelled" : "timed out";
-        snprintf(text_buf, text_len,
-                 "output:%s\nexit_code:%d\n[WARNING: command %s — partial output above]",
-                 output ? output : "(no output)", exit_code, reason);
-    } else {
-        snprintf(text_buf, text_len, "output:%s\nexit_code:%d",
-                 output ? output : "(no output)", exit_code);
-    }
-    cJSON_AddStringToObject(result, "text", text_buf);
-    free(text_buf);
-    free(output);
-    return result;
-}
+/* (Tool functions moved to tool_functions.c / tool_functions.h) */
 
 /* ============================================================================
  * Streaming Callback
  * ============================================================================ */
+
+/* Visual state tracked across events */
+static int  cb_in_reasoning  = 0;
+static int  cb_in_responding = 0;
+
+/* Format token count: 1234 -> "1.2k", 567 -> "567" */
+static const char *fmt_tokens(int n, char *buf, size_t bufsz) {
+    if (n >= 1000) {
+        snprintf(buf, bufsz, "%.1fk", n / 1000.0);
+    } else {
+        snprintf(buf, bufsz, "%d", n);
+    }
+    return buf;
+}
+
 static void on_runtime_event(llm_runtime_t *rt,
                               llm_runtime_event_t event,
                               const char *text,
@@ -141,39 +76,92 @@ static void on_runtime_event(llm_runtime_t *rt,
     (void)user_data;
 
     switch (event) {
+
     case LLM_RT_EVENT_REASONING:
-        /* Dim for reasoning */
+        if (!cb_in_reasoning) {
+            if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
+            printf("\033[90m[reasoning]\033[0m\n");
+            cb_in_reasoning = 1;
+        }
         printf("\033[2;3m%s\033[0m", text);
         fflush(stdout);
         break;
 
     case LLM_RT_EVENT_CONTENT:
+        if (!cb_in_responding) {
+            if (cb_in_reasoning) { printf("\n"); cb_in_reasoning = 0; }
+            cb_in_responding = 1;
+        }
         printf("\033[1;34m%s\033[0m", text);
         fflush(stdout);
         break;
 
     case LLM_RT_EVENT_STATUS_CHANGE:
-        printf("\n\033[90m[%s]\033[0m\n", text ? text : "?");
+        if (cb_in_reasoning && text && strcmp(text, "REASONING") != 0) {
+            printf("\n");
+            cb_in_reasoning = 0;
+        }
+        if (cb_in_responding && text && strcmp(text, "WRITING_TOOL_CALL") == 0) {
+            printf("\n");
+            cb_in_responding = 0;
+        }
         break;
 
     case LLM_RT_EVENT_TOOL_CALLS:
-        printf("\n\033[33m[Tool calls detected:");
+        printf("\n");
         if (data && cJSON_IsArray(data)) {
             int n = cJSON_GetArraySize(data);
             for (int i = 0; i < n; i++) {
-                cJSON *tc = cJSON_GetArrayItem(data, i);
+                cJSON *tc   = cJSON_GetArrayItem(data, i);
                 cJSON *func = cJSON_GetObjectItem(tc, "function");
                 cJSON *name = func ? cJSON_GetObjectItem(func, "name") : NULL;
-                const char *n_str = (name && cJSON_IsString(name))
-                                    ? name->valuestring : "?";
-                printf(" %s", n_str);
+                cJSON *args = func ? cJSON_GetObjectItem(func, "arguments") : NULL;
+
+                const char *n = (name && cJSON_IsString(name)) ? name->valuestring : "?";
+                const char *a = (args && cJSON_IsString(args)) ? args->valuestring : "";
+
+                printf("  \033[33mtool:\033[0m \033[1;33m%s\033[0m", n);
+                if (a && a[0]) {
+                    size_t alen = strlen(a);
+                    if (alen > 80) {
+                        printf(" \033[90m%.80s...\033[0m", a);
+                    } else {
+                        printf(" \033[90m%s\033[0m", a);
+                    }
+                }
+                printf("\n");
             }
         }
-        printf("]\033[0m\n");
         break;
 
     case LLM_RT_EVENT_TOOL_RESULT:
-        printf("\033[32m  [tool result: %s]\033[0m\n", text ? text : "?");
+        if (data) {
+            cJSON *nm = cJSON_GetObjectItem(data, "name");
+            cJSON *pv = cJSON_GetObjectItem(data, "preview");
+            const char *name_str = (nm && cJSON_IsString(nm)) ? nm->valuestring : "?";
+            const char *preview  = (pv && cJSON_IsString(pv)) ? pv->valuestring : "";
+
+            /* Show first line of preview inline, rest indented */
+            const char *first_nl = strchr(preview, '\n');
+            if (first_nl && *(first_nl + 1)) {
+                printf("  \033[32m-> %s\033[0m \033[90m%.*s\033[0m\n",
+                       name_str, (int)(first_nl - preview), preview);
+                /* Print remaining lines indented */
+                const char *rest = first_nl + 1;
+                while (*rest) {
+                    const char *next = strchr(rest, '\n');
+                    if (next) {
+                        printf("     \033[90m%.*s\033[0m\n", (int)(next - rest), rest);
+                        rest = next + 1;
+                    } else {
+                        printf("     \033[90m%s\033[0m\n", rest);
+                        break;
+                    }
+                }
+            } else {
+                printf("  \033[32m-> %s\033[0m \033[90m%s\033[0m\n", name_str, preview);
+            }
+        }
         break;
 
     case LLM_RT_EVENT_USAGE:
@@ -182,21 +170,60 @@ static void on_runtime_event(llm_runtime_t *rt,
             cJSON *c = cJSON_GetObjectItem(data, "completion_tokens");
             cJSON *h = cJSON_GetObjectItem(data, "cached_tokens");
             cJSON *t = cJSON_GetObjectItem(data, "total_tokens");
-            printf("\n\033[90m[Usage: prompt=%d, completion=%d, cached=%d, total=%d]\033[0m\n",
-                   p && cJSON_IsNumber(p) ? p->valueint : 0,
-                   c && cJSON_IsNumber(c) ? c->valueint : 0,
-                   h && cJSON_IsNumber(h) ? h->valueint : 0,
-                   t && cJSON_IsNumber(t) ? t->valueint : 0);
+
+            char pi[16], co[16], ca[16], to[16];
+            printf("\n\033[90min: %s  out: %s",
+                   fmt_tokens(p && cJSON_IsNumber(p) ? p->valueint : 0, pi, sizeof(pi)),
+                   fmt_tokens(c && cJSON_IsNumber(c) ? c->valueint : 0, co, sizeof(co)));
+            if (h && cJSON_IsNumber(h) && h->valueint > 0) {
+                printf("  cached: %s",
+                       fmt_tokens(h->valueint, ca, sizeof(ca)));
+            }
+            if (t && cJSON_IsNumber(t)) {
+                printf("  total: %s",
+                       fmt_tokens(t->valueint, to, sizeof(to)));
+            }
+            printf("\033[0m\n");
         }
         break;
 
     case LLM_RT_EVENT_DONE:
-        printf("\n\033[90m[Done]\033[0m\n");
+        if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
+        if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
         break;
 
     case LLM_RT_EVENT_ERROR:
-        printf("\n\033[31m[Error: %s]\033[0m\n", text ? text : "unknown");
+        cb_in_reasoning  = 0;
+        cb_in_responding = 0;
+        printf("\n\033[1;31mError: %s\033[0m\n", text ? text : "unknown");
         break;
+    }
+}
+
+/* ============================================================================
+ * History Persistence Helper
+ * ============================================================================ */
+static void save_history_step(llm_runtime_t *rt) {
+    if (!g_db) return;
+
+    const cJSON *history = llm_runtime_get_history(rt);
+    if (!history) return;
+
+    const cJSON *msgs = cJSON_GetObjectItem(history, "messages");
+    if (!msgs || cJSON_GetArraySize(msgs) == 0) return;
+
+    /* Lazy session creation: only create when there are messages to save */
+    if (g_session_id < 0) {
+        g_session_id = history_db_new_session(g_db, g_cwd);
+        if (g_session_id < 0) {
+            fprintf(stderr, "\n[history_db] failed to create session\n");
+            return;
+        }
+        g_saved_count = 0;
+    }
+
+    if (history_db_save_step(g_db, g_session_id, &g_saved_count, msgs) != 0) {
+        fprintf(stderr, "\n[history_db] failed to save messages\n");
     }
 }
 
@@ -240,9 +267,126 @@ coroutine void chat_loop(llm_runtime_t *rt) {
             printf("Goodbye!\n");
             break;
         }
-        if (strcmp(line, "reset") == 0) {
-            llm_runtime_reset(rt);
-            printf("Conversation reset.\n");
+        if (strcmp(line, "/sessions") == 0) {
+            cJSON *list = history_db_list_sessions(g_db, g_cwd);
+            if (list) {
+                int n = cJSON_GetArraySize(list);
+                printf("\n  \033[1m%-4s  %-6s  %-19s  %s\033[0m\n",
+                       "ID", "Msgs", "Created", "Last User Message");
+                for (int i = 0; i < n; i++) {
+                    cJSON *s   = cJSON_GetArrayItem(list, i);
+                    cJSON *id  = cJSON_GetObjectItem(s, "id");
+                    cJSON *mc  = cJSON_GetObjectItem(s, "msg_count");
+                    cJSON *cat = cJSON_GetObjectItem(s, "created_at");
+                    cJSON *lum = cJSON_GetObjectItem(s, "last_user_msg");
+
+                    int sid_val = id ? id->valueint : 0;
+                    const char *marker = (sid_val == g_session_id) ? "\033[32m*\033[0m " : "  ";
+
+                    printf("%s%-4d  %-6d  %-19s  %s\n",
+                           marker,
+                           sid_val,
+                           mc ? mc->valueint : 0,
+                           cat ? cat->valuestring : "?",
+                           lum && cJSON_IsString(lum) ? lum->valuestring
+                                                       : "\033[90m(empty)\033[0m");
+                }
+                if (n == 0) printf("  \033[90m(no sessions for %s)\033[0m\n", g_cwd);
+                printf("  \033[90m(* = current)\033[0m\n");
+                cJSON_Delete(list);
+            }
+            free(line);
+            continue;
+        }
+        if (strncmp(line, "/load ", 6) == 0) {
+            int64_t sid = strtoll(line + 6, NULL, 10);
+            if (sid > 0) {
+                cJSON *msgs = history_db_load_session(g_db, sid);
+                if (msgs && cJSON_GetArraySize(msgs) > 0) {
+                    llm_runtime_reset(rt);
+                    int n = cJSON_GetArraySize(msgs);
+
+                    /* Print the last 50 messages */
+                    int print_start = (n > 50) ? n - 50 : 0;
+                    printf("\n  ── History (messages %d-%d of %d) ──\n",
+                           print_start + 1, n, n);
+                    for (int i = print_start; i < n; i++) {
+                        cJSON *msg    = cJSON_GetArrayItem(msgs, i);
+                        cJSON *r      = cJSON_GetObjectItem(msg, "role");
+                        cJSON *c      = cJSON_GetObjectItem(msg, "content");
+                        cJSON *rc     = cJSON_GetObjectItem(msg, "reasoning_content");
+                        cJSON *tc_id  = cJSON_GetObjectItem(msg, "tool_call_id");
+                        cJSON *tc     = cJSON_GetObjectItem(msg, "tool_calls");
+
+                        const char *role = (r && cJSON_IsString(r)) ? r->valuestring : "?";
+                        const char *content = (c && cJSON_IsString(c)) ? c->valuestring : NULL;
+
+                        if (strcmp(role, "user") == 0) {
+                            printf("  \033[1;32m[%d] user:\033[0m %s\n",
+                                   i + 1, content ? content : "");
+                        } else if (strcmp(role, "assistant") == 0) {
+                            printf("  \033[1;34m[%d] assistant:\033[0m %s\n",
+                                   i + 1, content ? content : "(tool_calls only)");
+                            if (rc && cJSON_IsString(rc) && rc->valuestring[0]) {
+                                printf("  \033[2;3m       reasoning: %s\033[0m\n",
+                                       rc->valuestring);
+                            }
+                            if (tc && cJSON_IsArray(tc) && cJSON_GetArraySize(tc) > 0) {
+                                printf("  \033[33m       tool_calls:\033[0m ");
+                                int tcn = cJSON_GetArraySize(tc);
+                                for (int j = 0; j < tcn; j++) {
+                                    cJSON *t  = cJSON_GetArrayItem(tc, j);
+                                    cJSON *fn = cJSON_GetObjectItem(t, "function");
+                                    cJSON *nm = fn ? cJSON_GetObjectItem(fn, "name") : NULL;
+                                    printf("%s%s", j > 0 ? ", " : "",
+                                           (nm && cJSON_IsString(nm)) ? nm->valuestring : "?");
+                                }
+                                printf("\n");
+                            }
+                        } else if (strcmp(role, "tool") == 0) {
+                            const char *tid = (tc_id && cJSON_IsString(tc_id))
+                                              ? tc_id->valuestring : "?";
+                            printf("  \033[1;33m[%d] tool(%s):\033[0m %s\n",
+                                   i + 1, tid, content ? content : "");
+                        } else {
+                            printf("  \033[90m[%d] %s:\033[0m %s\n",
+                                   i + 1, role, content ? content : "");
+                        }
+                    }
+                    printf("  ── end of history ──\n\n");
+
+                    for (int i = 0; i < n; i++) {
+                        cJSON *msg = cJSON_GetArrayItem(msgs, i);
+                        llm_runtime_add_message(rt, msg);
+                    }
+                    g_session_id = sid;
+                    g_saved_count = history_db_get_saved_count(g_db, sid);
+                    if (g_saved_count < 0) g_saved_count = 0;
+                    printf("Loaded session %lld with %d messages.\n",
+                           (long long)sid, n);
+                } else {
+                    printf("Session %lld not found or empty.\n", (long long)sid);
+                }
+                cJSON_Delete(msgs);
+            }
+            free(line);
+            continue;
+        }
+        if (strncmp(line, "/delete ", 8) == 0) {
+            int64_t did = strtoll(line + 8, NULL, 10);
+            if (did > 0) {
+                if (history_db_delete_session(g_db, did) == 0) {
+                    printf("Deleted session %lld.\n", (long long)did);
+                    if (did == g_session_id) {
+                        g_session_id = -1;
+                        g_saved_count = 0;
+                        llm_runtime_reset(rt);
+                        printf("(current session was deleted, starting fresh)\n");
+                    }
+                } else {
+                    printf("Failed to delete session %lld.\n", (long long)did);
+                }
+            }
             free(line);
             continue;
         }
@@ -255,10 +399,15 @@ coroutine void chat_loop(llm_runtime_t *rt) {
         if (ret != 0) {
             if (llm_runtime_is_cancelled(rt)) {
                 printf("\n[Cancelled]\n");
+                /* Save partial progress (user msg + any tool results) */
+                save_history_step(rt);
             } else {
                 const char *err = llm_runtime_get_error(rt);
                 printf("\n\033[31mError: %s\033[0m\n", err ? err : "send failed");
             }
+        } else {
+            /* Save complete turn to history DB */
+            save_history_step(rt);
         }
 
         free(line);
@@ -321,16 +470,6 @@ int main(int argc, char *argv[]) {
     ic_enable_multiline(true);         /* Enter=submit, Shift+Enter=newline */
     ic_set_history(".history", 100);   /* persistent history */
 
-    printf("╔════════════════════════════════════════════════════════╗\n");
-    printf("║   LLM Runtime Demo (isocline)                         ║\n");
-    printf("╠════════════════════════════════════════════════════════╣\n");
-    printf("║ Model:    %-46s ║\n", model);
-    printf("║ Endpoint: %-44s ║\n", api_endpoint);
-    printf("║ Log:      %-44s ║\n", log_file);
-    printf("║ Input:    Enter=submit, Shift+Enter/Ctrl+J=newline    ║\n");
-    printf("║ Commands: quit, reset                                 ║\n");
-    printf("╚════════════════════════════════════════════════════════╝\n\n");
-
     /* Create runtime */
     llm_runtime_t *rt = llm_runtime_new(api_key, model, api_endpoint, log_file);
     if (!rt) {
@@ -339,46 +478,30 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* Capture working directory for session scope */
+    if (!getcwd(g_cwd, sizeof(g_cwd))) {
+        g_cwd[0] = '\0';
+    }
+
+    /* Open history database (session created lazily on first message) */
+    history_db_open(&g_db);
+
+
+    printf("Model:    %-46s\n", model);
+    printf("Endpoint: %-44s\n", api_endpoint);
+    printf("Log:      %-44s\n", log_file);
+    printf("CWD:      %-46s\n", g_cwd);
+    printf("Input:    Enter=submit, Shift+Enter/Ctrl+J=newline\n");
+    printf("Commands: /sessions, /load <id>, /delete <id>\n");
+
     /* Register tools and schemas */
     llm_runtime_register_tool(rt, "sleep", tool_sleep);
     llm_runtime_register_tool(rt, "shell", tool_shell);
+    llm_runtime_register_tool(rt, "read", tool_read);
+    llm_runtime_register_tool(rt, "write", tool_write);
+    llm_runtime_register_tool(rt, "edit", tool_edit);
 
-    /* sleep tool schema */
-    cJSON *sleep_schema = cJSON_CreateObject();
-    cJSON_AddStringToObject(sleep_schema, "type", "function");
-    cJSON *func = cJSON_AddObjectToObject(sleep_schema, "function");
-    cJSON_AddStringToObject(func, "name", "sleep");
-    cJSON_AddStringToObject(func, "description", "Sleep for a given number of seconds");
-    cJSON *params = cJSON_AddObjectToObject(func, "parameters");
-    cJSON_AddStringToObject(params, "type", "object");
-    cJSON *props = cJSON_AddObjectToObject(params, "properties");
-    cJSON *secs = cJSON_AddObjectToObject(props, "secs");
-    cJSON_AddStringToObject(secs, "type", "number");
-    cJSON_AddStringToObject(secs, "description", "Number of seconds to sleep");
-    cJSON *required = cJSON_AddArrayToObject(params, "required");
-    cJSON_AddItemToArray(required, cJSON_CreateString("secs"));
-
-    /* shell tool schema */
-    cJSON *shell_schema = cJSON_CreateObject();
-    cJSON_AddStringToObject(shell_schema, "type", "function");
-    cJSON *sh_func = cJSON_AddObjectToObject(shell_schema, "function");
-    cJSON_AddStringToObject(sh_func, "name", "shell");
-    cJSON_AddStringToObject(sh_func, "description",
-        "Run a shell command and return its output (stdout+stderr merged). "
-        "Useful for: ls, cat, grep, find, wc, date, curl, git status, etc. "
-        "Avoid commands that run forever or require interactive input.");
-    cJSON *sh_params = cJSON_AddObjectToObject(sh_func, "parameters");
-    cJSON_AddStringToObject(sh_params, "type", "object");
-    cJSON *sh_props = cJSON_AddObjectToObject(sh_params, "properties");
-    cJSON *sh_cmd = cJSON_AddObjectToObject(sh_props, "cmd");
-    cJSON_AddStringToObject(sh_cmd, "type", "string");
-    cJSON_AddStringToObject(sh_cmd, "description", "The shell command to execute");
-    cJSON *sh_required = cJSON_AddArrayToObject(sh_params, "required");
-    cJSON_AddItemToArray(sh_required, cJSON_CreateString("cmd"));
-
-    cJSON *schemas = cJSON_CreateArray();
-    cJSON_AddItemToArray(schemas, sleep_schema);
-    cJSON_AddItemToArray(schemas, shell_schema);
+    cJSON *schemas = tool_functions_create_schema();
     llm_runtime_set_tool_schema(rt, schemas);
     cJSON_Delete(schemas);
 

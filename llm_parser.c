@@ -100,23 +100,30 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
         return -1;
     }
 
-    /* content: OpenAI allows null */
-    if (p->assistant.content_buf && p->assistant.content_len > 0) {
-        cJSON_AddStringToObject(msg, "content", p->assistant.content_buf);
-    } else {
-        cJSON_AddNullToObject(msg, "content");
-    }
-
-    /* reasoning_content (OpenAI extended field) */
-    if (p->assistant.reasoning_buf && p->assistant.reasoning_len > 0) {
+    /* reasoning_content (OpenAI extended field) — check first */
+    int has_reasoning = (p->assistant.reasoning_buf && p->assistant.reasoning_len > 0);
+    if (has_reasoning) {
         cJSON_AddStringToObject(msg, "reasoning_content", p->assistant.reasoning_buf);
     }
 
     /* tool_calls */
     cJSON* out_tc = NULL;
-    if(feed_toolcall_delta(&p->tool_call_parser, last_chunk, &out_tc) == 1)
-    {
-        cJSON_AddItemToObject(msg,"tool_calls", out_tc);
+    int has_tool_calls = (feed_toolcall_delta(&p->tool_call_parser, last_chunk, &out_tc) == 1);
+    if (has_tool_calls) {
+        cJSON_AddItemToObject(msg, "tool_calls", out_tc);
+    }
+
+    /* content: The API requires content or tool_calls to be set.
+     * If we have actual content, use it.
+     * If we have tool_calls, content can be null (API accepts it).
+     * If we have neither content nor tool_calls (e.g. only reasoning),
+     * use empty string to satisfy the API constraint. */
+    if (p->assistant.content_buf && p->assistant.content_len > 0) {
+        cJSON_AddStringToObject(msg, "content", p->assistant.content_buf);
+    } else if (has_tool_calls) {
+        cJSON_AddNullToObject(msg, "content");
+    } else {
+        cJSON_AddStringToObject(msg, "content", "");
     }
 
     cJSON_AddItemToArray(p->messages_array, msg);
