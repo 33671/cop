@@ -1,0 +1,13 @@
+# Build as: 
+#   $ stack update
+#   $ stack build
+#   $ stack run example 
+
+resolver: lts-24.11             # ghc 9.10.2
+# resolver: lts-18.21           # ghc 8.10.7
+# resolver: lts-14.27           # ghc 8.6.5
+# resolver: lts-9.21            # ghc 8.0.2
+# system-ghc: true              # uncomment to use the system installed GHC
+
+allow-newer: true
+rebuild-ghc-options: true
