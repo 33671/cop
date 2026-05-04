@@ -132,6 +132,11 @@ void llm_runtime_free(llm_runtime_t *rt);
 void llm_runtime_set_system_message(llm_runtime_t *rt, const char *msg);
 void llm_runtime_set_temperature(llm_runtime_t *rt, double temp);
 
+/* Switch model / API configuration at runtime. Returns 0 on success. */
+int  llm_runtime_set_model(llm_runtime_t *rt, const char *model,
+                             const char *api_key, const char *api_endpoint);
+const char *llm_runtime_get_model(llm_runtime_t *rt);
+
 /* ============================================================================
  * Tool Registration
  * ============================================================================ */

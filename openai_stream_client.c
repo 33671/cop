@@ -247,6 +247,28 @@ void stream_client_set_temperature(stream_client_t *c, double temp) {
     c->temperature = temp;
 }
 
+void stream_client_set_model(stream_client_t *c, const char *model) {
+    if (!c || !model) return;
+    free(c->model);
+    c->model = strdup(model);
+}
+
+void stream_client_set_api(stream_client_t *c, const char *api_key, const char *api_endpoint) {
+    if (!c) return;
+    if (api_key) {
+        free(c->api_key);
+        c->api_key = strdup(api_key);
+    }
+    if (api_endpoint) {
+        free(c->api_endpoint);
+        c->api_endpoint = strdup(api_endpoint);
+    }
+}
+
+const char *stream_client_get_model(stream_client_t *c) {
+    return c ? c->model : NULL;
+}
+
 void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas) {
     if (!c) return;
     cJSON_Delete(c->tool_schemas);

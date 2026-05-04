@@ -119,6 +119,22 @@ void llm_runtime_set_temperature(llm_runtime_t *rt, double temp) {
     stream_client_set_temperature(rt->client, temp);
 }
 
+int llm_runtime_set_model(llm_runtime_t *rt, const char *model,
+                            const char *api_key, const char *api_endpoint) {
+    if (!rt || !model) return -1;
+    stream_client_set_model(rt->client, model);
+    stream_client_set_api(rt->client, api_key, api_endpoint);
+    free(rt->model);
+    rt->model = strdup(model);
+    if (api_key)     { free(rt->api_key);      rt->api_key      = strdup(api_key); }
+    if (api_endpoint) { free(rt->api_endpoint); rt->api_endpoint = strdup(api_endpoint); }
+    return 0;
+}
+
+const char *llm_runtime_get_model(llm_runtime_t *rt) {
+    return rt ? rt->model : NULL;
+}
+
 /* ============================================================================
  * Tool Registration
  * ============================================================================ */

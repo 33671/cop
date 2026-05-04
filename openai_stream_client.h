@@ -106,6 +106,13 @@ void stream_client_set_system_message(stream_client_t *c, const char *message);
 void stream_client_set_temperature(stream_client_t *c, double temp);
 
 /*
+ * Switch model at runtime.
+ */
+void stream_client_set_model(stream_client_t *c, const char *model);
+void stream_client_set_api(stream_client_t *c, const char *api_key, const char *api_endpoint);
+const char *stream_client_get_model(stream_client_t *c);
+
+/*
  * Set tool schemas for the request body.
  * schemas: cJSON Array of tool definition objects, e.g.
  *   [{"type":"function","function":{"name":"...","description":"...","parameters":{...}}}]

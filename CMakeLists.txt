@@ -174,6 +174,16 @@ target_include_directories(history_db PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
 )
 
+# Models configuration (parses ~/.agent/models.json)
+add_library(models_config STATIC models_config.c)
+target_link_libraries(models_config
+    cjson
+)
+target_include_directories(models_config PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+)
+
 # Tool functions (example tool implementations)
 add_library(tool_functions STATIC tool_functions.c)
 target_link_libraries(tool_functions
@@ -193,6 +203,7 @@ target_compile_options(llm_runtime_test PRIVATE
     -fno-stack-clash-protection
 )
 target_link_libraries(llm_runtime_test
+    models_config
     history_db
     tool_functions
     isocline

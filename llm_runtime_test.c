@@ -22,17 +22,19 @@
 #include "llm_runtime.h"
 #include "tool_functions.h"
 #include "history_db.h"
+#include "models_config.h"
 #include "libmill/libmill.h"
 #include "isocline/include/isocline.h"
 
 /* ============================================================================
  * Global State
  * ============================================================================ */
-static llm_runtime_t *g_rt = NULL;  /* set in main() for signal handler access */
-static history_db_t  *g_db = NULL;  /* history database handle */
-static int64_t        g_session_id = -1;  /* current session id */
-static int            g_saved_count = 0;  /* messages saved for current session */
-static char           g_cwd[4096];        /* working directory for session scope */
+static llm_runtime_t    *g_rt = NULL;
+static history_db_t     *g_db = NULL;
+static int64_t           g_session_id = -1;
+static int               g_saved_count = 0;
+static char              g_cwd[4096];
+static model_entry_t   **g_models = NULL;   /* loaded from ~/.agent/models.json */
 
 void sigint_handler(int sig) {
     (void)sig;
@@ -390,6 +392,60 @@ coroutine void chat_loop(llm_runtime_t *rt) {
             free(line);
             continue;
         }
+        if (strcmp(line, "/model") == 0) {
+            if (!g_models) {
+                printf("No models loaded (check ~/.agent/models.json).\n");
+            } else {
+                printf("\n");
+                const char *current = llm_runtime_get_model(rt);
+                const char *last_prov = NULL;
+                for (int i = 0; g_models[i]; i++) {
+                    model_entry_t *m = g_models[i];
+                    if (!last_prov || strcmp(m->provider, last_prov) != 0) {
+                        printf("  \033[1;36m%s\033[0m  (%s)\n",
+                               m->provider, m->base_url);
+                        last_prov = m->provider;
+                    }
+                    const char *marker = (current && strcmp(m->model_id, current) == 0)
+                                         ? "\033[32m*\033[0m" : " ";
+                    printf("   %s \033[33m%s\033[0m",
+                           marker, m->model_id);
+                    if (m->context_window > 0) {
+                        printf("  \033[90m%dk ctx\033[0m",
+                               m->context_window / 1000);
+                    }
+                    printf("\n");
+                }
+                printf("\n  \033[90m* = current\033[0m\n");
+            }
+            free(line);
+            continue;
+        }
+        if (strncmp(line, "/set_model ", 11) == 0) {
+            const char *model_id = line + 11;
+            const model_entry_t *entry = models_config_find(g_models, model_id);
+            if (!entry) {
+                printf("Model '%s' not found. Use /model to list.\n", model_id);
+            } else {
+                char endpoint[512];
+                const char *base = entry->base_url;
+                size_t blen = strlen(base);
+                /* Build endpoint, stripping any trailing slash from base_url */
+                if (blen > 0 && base[blen - 1] == '/') {
+                    snprintf(endpoint, sizeof(endpoint),
+                             "%.*s/chat/completions", (int)(blen - 1), base);
+                } else {
+                    snprintf(endpoint, sizeof(endpoint),
+                             "%s/chat/completions", base);
+                }
+                llm_runtime_set_model(rt, entry->model_id,
+                                      entry->api_key, endpoint);
+                printf("Switched to \033[1;33m%s\033[0m (\033[36m%s\033[0m)\n",
+                       entry->model_id, entry->provider);
+            }
+            free(line);
+            continue;
+        }
 
         /* Send message and stream the response */
         // ic_print("[green][b]Assistant:[/] ");
@@ -424,42 +480,30 @@ coroutine void chat_loop(llm_runtime_t *rt) {
  * Main
  * ============================================================================ */
 int main(int argc, char *argv[]) {
-    /* Load .env */
-    load_env_file(".env");
-    load_env_file("../.env");
-
     signal(SIGINT, sigint_handler);
 
-    /* Config */
-    const char *model       = "kimi-k2.5";
-    const char *api_endpoint = "https://api.moonshot.cn/v1/chat/completions";
-    const char *log_file    = "llm_runtime.log";
-
-    /* API key */
-    const char *api_key = getenv("OPENAI_API_KEY");
-    if (!api_key) api_key = getenv("MOONSHOT_API_KEY");
-    if (!api_key) {
-        fprintf(stderr, "Error: set OPENAI_API_KEY or MOONSHOT_API_KEY\n");
+    /* Load model config from ~/.agent/models.json */
+    g_models = models_config_load();
+    if (!g_models || !g_models[0]) {
+        fprintf(stderr, "Error: no models found in ~/.agent/models.json\n"
+                "Create it with format:\n"
+                "{\"providers\":{\"name\":{\"baseUrl\":\"...\","
+                "\"apiKey\":\"...\",\"models\":[{\"id\":\"...\"}]}}}\n");
         return 1;
     }
 
-    /* Read base URL and model from env */
-    const char *api_url = getenv("OPENAI_BASE_URL");
-    if (api_url) {
-        static char endpoint_buf[512];
-        snprintf(endpoint_buf, sizeof(endpoint_buf),
-                 "%s/chat/completions", api_url);
-        api_endpoint = endpoint_buf;
-    }
-    const char *env_model = getenv("MODEL_NAME");
-    if (env_model) model = env_model;
+    /* Default: first model in config */
+    const char *model        = g_models[0]->model_id;
+    const char *api_key      = g_models[0]->api_key;
+    char        api_endpoint[512];
+    snprintf(api_endpoint, sizeof(api_endpoint),
+             "%s/chat/completions", g_models[0]->base_url);
+    const char *log_file     = "llm_runtime.log";
 
     /* Parse CLI args */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--model") == 0 && i + 1 < argc)
             model = argv[++i];
-        else if (strcmp(argv[i], "--endpoint") == 0 && i + 1 < argc)
-            api_endpoint = argv[++i];
         else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc)
             log_file = argv[++i];
     }
@@ -492,7 +536,7 @@ int main(int argc, char *argv[]) {
     printf("Log:      %-44s\n", log_file);
     printf("CWD:      %-46s\n", g_cwd);
     printf("Input:    Enter=submit, Shift+Enter/Ctrl+J=newline\n");
-    printf("Commands: /sessions, /load <id>, /delete <id>\n");
+    printf("Commands: /model, /set_model <id>, /sessions, /load, /delete\n");
 
     /* Register tools and schemas */
     llm_runtime_register_tool(rt, "sleep", tool_sleep);
