@@ -29,10 +29,15 @@
 #define TOOL_READ_MAX_BYTES (100 * 1024)
 
 /* Prompt user for y/N approval.
- * Returns 1 if approved, 0 if denied, -1 if cancelled (Ctrl+D). */
+ * Returns 1 if approved, 0 if denied, -1 if cancelled (Ctrl+C). */
 static int ask_approval(llm_runtime_t *rt, const char *prompt) {
     (void)rt;
     char *reply = ic_readline(prompt);
+
+    if (ic_was_interrupted()) {
+        free(reply);
+        return -1;  /* Ctrl+C pressed */
+    }
 
     if (!reply) return -1;  /* Ctrl+D on empty line → cancel turn */
 

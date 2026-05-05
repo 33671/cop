@@ -59,6 +59,7 @@ ic_public char* ic_readline(const char* prompt_text)
 {
   ic_env_t* env = ic_get_env();
   if (env == NULL) return NULL;
+  env->interrupted = false;  /* reset each call */
   if (!env->noedit) {
     // terminal editing enabled
     return ic_editline(env, prompt_text);   // in editline.c
@@ -234,6 +235,11 @@ ic_public bool ic_enable_completion_preview( bool enable ) {
   bool prev = env->complete_nopreview;
   env->complete_nopreview = !enable;
   return !prev;
+}
+
+ic_public bool ic_was_interrupted(void) {
+  ic_env_t* env = ic_get_env();
+  return (env != NULL && env->interrupted);
 }
 
 ic_public bool ic_enable_multiline_indent(bool enable) {

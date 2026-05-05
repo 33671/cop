@@ -948,6 +948,7 @@ static char* edit_line( ic_env_t* env, const char* prompt_text )
     }
     else if (c == KEY_BELL /* ^G */ || c == KEY_CTRL_C) {
       edit_delete_all(env,&eb);
+      env->interrupted = true;
       break; // ctrl+G or ctrl+c cancels (and returns empty input)
     }
 

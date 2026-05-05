@@ -130,7 +130,7 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
     p->assistant.msg = NULL;   /* ownership transferred */
     reset_assistant(p);
     p->state = STATE_IDLE;
-    fprintf(stderr, "\n%s\n", cJSON_Print(p->history));
+    // fprintf(stderr, "\n%s\n", cJSON_Print(p->history));
     return 0;
 }
 
@@ -368,7 +368,7 @@ LlmParserStatus llm_parser_force_finish(LlmParser *p)
     p->assistant.msg = NULL;
     reset_assistant(p);  /* This also resets toolcall_parser, discarding partial tool calls */
     p->state = STATE_IDLE;
-    fprintf(stderr, "\n%s\n", cJSON_Print(p->history));
+    // fprintf(stderr, "\n%s\n", cJSON_Print(p->history));
 
     return LLM_PARSER_FINISHED;
 }

@@ -356,6 +356,9 @@ bool ic_enable_auto_tab( bool enable );
 /// Returns the previous setting.
 bool ic_enable_completion_preview( bool enable );
 
+/// Was the last `ic_readline` interrupted by Ctrl+C?
+bool ic_was_interrupted(void);
+
 /// Disable or enable automatic identation of continuation lines in multiline
 /// input so it aligns with the initial prompt.
 /// Returns the previous setting.
