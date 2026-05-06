@@ -45,9 +45,11 @@ static cJSON *new_text_result(const char *msg) {
  * Shared Helpers — user approval
  * ============================================================================ */
 
-/* Ask y/N. Returns 1 approved, 0 denied, -1 Ctrl+C. */
+/* Ask y/N. Returns 1 approved, 0 denied, -1 Ctrl+C.
+   In --yolo mode, skips prompt and always returns 1. */
 static int ask_approval(llm_runtime_t *rt, const char *prompt) {
     (void)rt;
+    if (llm_runtime_is_yolo(rt)) return 1;
     char *reply = ic_readline(prompt);
     if (ic_was_interrupted()) { free(reply); return -1; }
     if (!reply)               return -1;
@@ -71,6 +73,7 @@ static int check_approval(llm_runtime_t *rt, cJSON *result,
         return 0;
     }
     if (a == 0) {
+        llm_runtime_cancel(rt);
         cJSON_AddStringToObject(result, "text", deny_msg);
         return 0;
     }
@@ -279,7 +282,7 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
 
     char *output = NULL;
     int exit_code = 0;
-    int ret = llm_runtime_popen(rt, cmd, now() + 30000, &output, &exit_code);
+    int ret = llm_runtime_popen(rt, cmd, now() + 7200000, &output, &exit_code);
 
     sanitize_truncate_output(&output, OUTPUT_MAX_LINE, OUTPUT_MAX_TOTAL);
 
@@ -697,7 +700,9 @@ void tool_functions_add_shell_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "description",
         "Run a shell command and return its output (stdout+stderr merged). "
         "Useful for: ls, cat, grep, find, wc, date, curl, git status, etc. "
-        "Avoid commands that run forever or require interactive input.");
+        "Avoid commands that run forever or require interactive input. "
+        "For long-running commands, use timeout prefixes like 'timeout 30s ...' "
+        "to manually control the time limit.");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
@@ -717,7 +722,9 @@ void tool_functions_add_read_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "description",
         "Read the contents of a file. Use this to view source code, "
         "configuration files, logs, or any text file. "
-        "Maximum returned size is 100 KB. No approval needed.");
+        "Maximum returned size is 100 KB. No approval needed. "
+        "Before reading, use shell 'pwd' to confirm the current workspace "
+        "directory so you can construct correct relative paths.");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");

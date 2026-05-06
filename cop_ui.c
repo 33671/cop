@@ -551,6 +551,8 @@ void cop_ui_banner(const char *model, const char *endpoint,
     printf("Endpoint: %s\n", endpoint);
     printf("Log:      %s\n", log_file);
     printf("CWD:      %s\n", cwd);
+    if (g_rt && llm_runtime_is_yolo(g_rt))
+        printf("Mode:     YOLO — auto-approving all tool calls\n");
     printf("Input:    Enter=submit, Shift+Enter/Ctrl+J=newline\n");
     printf("Commands: /model, /set_model <id>, /sessions, /load, /delete\n");
 }

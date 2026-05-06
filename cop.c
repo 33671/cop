@@ -72,11 +72,14 @@ int main(int argc, char *argv[]) {
     }
 
     /* Parse CLI args */
+    int yolo_flag = 0;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--model") == 0 && i + 1 < argc)
             model = argv[++i];
         else if (strcmp(argv[i], "--log") == 0 && i + 1 < argc)
             snprintf(log_file, sizeof(log_file), "%s", argv[++i]);
+        else if (strcmp(argv[i], "--yolo") == 0)
+            yolo_flag = 1;
     }
 
     curl_global_init(CURL_GLOBAL_DEFAULT);
@@ -99,6 +102,7 @@ int main(int argc, char *argv[]) {
         curl_global_cleanup();
         return 1;
     }
+    if (yolo_flag) llm_runtime_set_yolo(rt, 1);
 
     /* Capture working directory */
     if (!getcwd(g_cwd, sizeof(g_cwd))) g_cwd[0] = '\0';

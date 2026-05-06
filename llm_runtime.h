@@ -219,6 +219,10 @@ void llm_runtime_cancel(llm_runtime_t *rt);
 /* Check if cancellation was requested. Useful in long-running tool functions. */
 int llm_runtime_is_cancelled(const llm_runtime_t *rt);
 
+/* Enable/disable YOLO mode (auto-approve all tool calls). */
+void llm_runtime_set_yolo(llm_runtime_t *rt, int yolo);
+int  llm_runtime_is_yolo(const llm_runtime_t *rt);
+
 /* Get the last error message, or NULL if no error. */
 const char *llm_runtime_get_error(const llm_runtime_t *rt);
 

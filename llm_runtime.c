@@ -43,6 +43,9 @@ struct llm_runtime {
 
     /* Cancellation flag */
     volatile int running;
+
+    /* YOLO mode: auto-approve tool calls */
+    int yolo;
 };
 
 /* ============================================================================
@@ -603,6 +606,14 @@ const char *llm_runtime_get_state_string(const llm_runtime_t *rt) {
 
 int llm_runtime_is_cancelled(const llm_runtime_t *rt) {
     return rt ? !rt->running : 1;
+}
+
+void llm_runtime_set_yolo(llm_runtime_t *rt, int yolo) {
+    if (rt) rt->yolo = yolo;
+}
+
+int llm_runtime_is_yolo(const llm_runtime_t *rt) {
+    return rt ? rt->yolo : 0;
 }
 
 /* ============================================================================
