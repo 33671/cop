@@ -190,6 +190,7 @@ target_link_libraries(tool_functions
     isocline
     llm_runtime
     cjson
+    sanitize_utf8
 )
 target_include_directories(tool_functions PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -236,6 +237,14 @@ target_link_libraries(llm_runtime_test
     mill
     CURL::libcurl
 )
+
+# UTF-8 Sanitizer library and tests
+add_library(sanitize_utf8 STATIC sanitize_utf8.c)
+target_include_directories(sanitize_utf8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_executable(test_sanitize_utf8 test_sanitize_utf8.c sanitize_utf8.c)
+target_include_directories(test_sanitize_utf8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(test_sanitize_utf8 PRIVATE -Wall -Wextra)
 
 # Print configuration
 message(STATUS "")
