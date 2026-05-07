@@ -122,10 +122,12 @@ static void on_runtime_event(llm_runtime_t *rt,
         break;
 
     case LLM_RT_EVENT_STATUS_CHANGE:
-        /* Only close content block when switching to tool calls */
-        if (cb_in_responding && text && strcmp(text, "WRITING_TOOL_CALL") == 0) {
-            printf("\n");
-            cb_in_responding = 0;
+        if (text && strcmp(text, "LLM_WRITING_TOOL_CALL") == 0) {
+            /* Close previous content/reasoning block and show indicator */
+            if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
+            if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
+            printf("\033[90m[writing tool call...]\033[0m");
+            fflush(stdout);
         }
         break;
 

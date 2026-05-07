@@ -466,9 +466,9 @@ coroutine int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1800L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
         curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 5L);
+        curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 20L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, client_curl_write_cb);
