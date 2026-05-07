@@ -1,0 +1,7 @@
+an llm agent in C
+
+build:
+apt install libcurl4-openssl-dev
+mkdir build && cd build
+cmake .. && make -j$(nproc)
+./cop
