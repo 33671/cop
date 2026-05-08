@@ -8,6 +8,8 @@
 #include "tool_functions.h"
 #include "isocline/include/isocline.h"
 #include "cjson/cJSON.h"
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,10 +133,17 @@ static void on_runtime_event(llm_runtime_t *rt,
                 if (pj && cJSON_IsString(pj)) pv = pj->valuestring;
             }
             if (pv && pv[0]) {
-                /* Scroll: show rightmost portion fitting in 80 cols */
+                /* Get actual terminal width */
+                int term_w = 80;
+                struct winsize ws;
+                if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+                    term_w = ws.ws_col;
+                }
+                /* Scroll: show rightmost portion fitting available width */
                 int plen = (int)strlen(pv);
                 int prefix = 10;  /* "  tool: " */
-                int avail = 80 - prefix;
+                int avail = term_w - prefix;
+                if (avail < 20) avail = 20;
                 int show = plen;
                 int start = 0;
                 if (show > avail) {
