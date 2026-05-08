@@ -59,4 +59,14 @@ int feed_toolcall_delta(ToolCallDeltaParser *parser,
 void toolcall_parser_free(ToolCallDeltaParser *parser);
 
 void toolcall_parser_reset(ToolCallDeltaParser *parser);
+
+/*
+ * 获取当前正在累积的工具调用预览字符串。
+ * 写入 buf（最多 bufsz 个字符，含 '\0'），返回 buf。
+ * 格式示例: 'shell {"command":"ls -la"...}'
+ * 如果没有活跃的工具调用，返回空字符串。
+ */
+const char *toolcall_parser_get_preview(const ToolCallDeltaParser *parser,
+                                        char *buf, size_t bufsz);
+
 #endif /* TOOLCALL_PARSER_H */

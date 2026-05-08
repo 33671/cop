@@ -123,15 +123,35 @@ static void on_runtime_event(llm_runtime_t *rt,
 
     case LLM_RT_EVENT_STATUS_CHANGE:
         if (text && strcmp(text, "LLM_WRITING_TOOL_CALL") == 0) {
-            /* Close previous content/reasoning block and show indicator */
             if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
             if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
-            printf("\033[90m[writing tool call...]\033[0m");
+            const char *pv = NULL;
+            if (data) {
+                cJSON *pj = cJSON_GetObjectItem(data, "preview");
+                if (pj && cJSON_IsString(pj)) pv = pj->valuestring;
+            }
+            if (pv && pv[0]) {
+                /* Scroll: show rightmost portion fitting in 80 cols */
+                int plen = (int)strlen(pv);
+                int prefix = 10;  /* "  tool: " */
+                int avail = 80 - prefix;
+                int show = plen;
+                int start = 0;
+                if (show > avail) {
+                    start = show - avail;
+                    show = avail;
+                }
+                printf("\r\033[K  \033[33mtool:\033[0m \033[1;33m%.*s\033[0m",
+                       show, pv + start);
+            } else {
+                printf("\r\033[K\033[90m[writing tool call...]\033[0m");
+            }
             fflush(stdout);
         }
         break;
 
     case LLM_RT_EVENT_TOOL_CALLS:
+        printf("\r\033[K");  /* erase in-progress preview */
         if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
         if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
         printf("\n");
@@ -225,6 +245,7 @@ static void on_runtime_event(llm_runtime_t *rt,
         break;
 
     case LLM_RT_EVENT_DONE:
+        printf("\r\033[K");  /* erase any leftover preview */
         if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
         if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
         break;

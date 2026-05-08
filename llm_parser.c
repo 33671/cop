@@ -393,6 +393,17 @@ int llm_parser_pop_last_message(LlmParser *p) {
     return count - 1;
 }
 
+const char *llm_parser_get_tool_preview(const LlmParser *p,
+                                        char *buf, size_t bufsz)
+{
+    if (!p || !buf || bufsz == 0) {
+        if (buf && bufsz > 0) buf[0] = '\0';
+        return buf;
+    }
+    return toolcall_parser_get_preview(
+        (const ToolCallDeltaParser *)&p->tool_call_parser, buf, bufsz);
+}
+
 const char* llm_parser_status_to_str(LlmParserStatus status) {
     switch (status) {
         /* Errors */

@@ -68,4 +68,11 @@ int llm_parser_get_last_usage(const LlmParser *p,
  */
 int llm_parser_pop_last_message(LlmParser *p);
 
+/*
+ * Get a preview of in-progress tool calls. Writes to buf (max bufsz chars).
+ * Returns empty string if no tool calls are being accumulated.
+ */
+const char *llm_parser_get_tool_preview(const LlmParser *p,
+                                        char *buf, size_t bufsz);
+
 #endif /* LLM_PARSER_H */

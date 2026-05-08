@@ -480,10 +480,26 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             }
 
             /* Notify status changes */
-            if (status != last_status && status != LLM_PARSER_IDLE && on_chunk) {
-                on_chunk(rt, LLM_RT_EVENT_STATUS_CHANGE,
-                         llm_parser_status_to_str(status), NULL, user_data);
-                last_status = status;
+            if (on_chunk) {
+                int do_notify = (status != last_status && status != LLM_PARSER_IDLE);
+                if (do_notify || status == LLM_PARSER_WRITING_TOOL_CALL) {
+                    cJSON *sdata = NULL;
+                    if (status == LLM_PARSER_WRITING_TOOL_CALL) {
+                        /* Attach in-progress tool call preview */
+                        char preview[4096];
+                        llm_parser_get_tool_preview(rt->parser,
+                                                    preview, sizeof(preview));
+                        if (preview[0]) {
+                            sdata = cJSON_CreateObject();
+                            cJSON_AddStringToObject(sdata, "preview", preview);
+                        }
+                    }
+                    on_chunk(rt, LLM_RT_EVENT_STATUS_CHANGE,
+                             llm_parser_status_to_str(status),
+                             sdata, user_data);
+                    if (sdata) cJSON_Delete(sdata);
+                    last_status = status;
+                }
             }
 
             /* Notify reasoning content */

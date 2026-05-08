@@ -218,3 +218,64 @@ void toolcall_parser_reset(ToolCallDeltaParser *p)
     toolcall_parser_free(p);
     toolcall_parser_init(p);
 }
+
+/*
+ * Build a preview string of all active tool calls.
+ * Format: "shell {\"command\":...}" with truncated arguments.
+ */
+const char *toolcall_parser_get_preview(const ToolCallDeltaParser *parser,
+                                        char *buf, size_t bufsz)
+{
+    if (!parser || !buf || bufsz == 0) return buf;
+    buf[0] = '\0';
+    if (!parser->any_active) return buf;
+
+    size_t pos = 0;
+    for (int i = 0; i < MAX_TOOL_CALLS && pos + 4 < bufsz; i++) {
+        const ToolCallSlot *slot = &parser->slots[i];
+        if (!slot->active) continue;
+
+        /* Separator between multiple tool calls */
+        if (pos > 0 && pos + 3 < bufsz) {
+            buf[pos++] = ' ';
+            buf[pos++] = '|';
+            buf[pos++] = ' ';
+            buf[pos] = '\0';
+        }
+
+        /* Name */
+        const char *name = slot->name && slot->name[0] ? slot->name : "?";
+        size_t nrem = bufsz - pos - 1;
+        size_t ncpy = strlen(name);
+        if (ncpy > nrem) ncpy = nrem;
+        memcpy(buf + pos, name, ncpy);
+        pos += ncpy;
+        buf[pos] = '\0';
+
+        /* Space + args opening */
+        if (pos + 2 < bufsz) { buf[pos++] = ' '; buf[pos] = '\0'; }
+
+        /* Arguments — keep tail when truncating so scroll shows latest content */
+        if (slot->arguments && slot->args_len > 0) {
+            size_t arem = bufsz - pos - 4;  /* room for "..." + \0 */
+            if (slot->args_len > arem) {
+                /* Truncate: show "..." then tail of args */
+                if (pos + 3 < bufsz) {
+                    memcpy(buf + pos, "...", 3);
+                    pos += 3;
+                }
+                size_t tail = arem - 3;  /* bytes left after "..." */
+                if (tail > 0) {
+                    memcpy(buf + pos,
+                           slot->arguments + slot->args_len - tail, tail);
+                    pos += tail;
+                }
+            } else {
+                memcpy(buf + pos, slot->arguments, slot->args_len);
+                pos += slot->args_len;
+            }
+            buf[pos] = '\0';
+        }
+    }
+    return buf;
+}
