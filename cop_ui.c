@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -27,6 +28,7 @@ static const char *slash_commands[] = {
     "/load ",
     "/delete ",
     "/delete all",
+    "/export",
     NULL
 };
 
@@ -491,6 +493,48 @@ static void cmd_delete(llm_runtime_t *rt, const char *arg) {
     }
 }
 
+static void cmd_export(llm_runtime_t *rt) {
+    (void)rt;
+    const cJSON *history = llm_runtime_get_history(rt);
+    if (!history) {
+        printf("No conversation to export.\n");
+        return;
+    }
+    const cJSON *msgs = cJSON_GetObjectItem(history, "messages");
+    int count = msgs ? cJSON_GetArraySize(msgs) : 0;
+    if (count == 0) {
+        printf("No messages to export.\n");
+        return;
+    }
+
+    /* Build timestamp filename: cop_export_20260508_143022.json */
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+    char fname[128];
+    snprintf(fname, sizeof(fname),
+             "cop_export_%04d%02d%02d_%02d%02d%02d.json",
+             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+             tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+    char *json_str = cJSON_Print(history);
+    if (!json_str) {
+        printf("Error: cJSON_Print failed.\n");
+        return;
+    }
+
+    FILE *f = fopen(fname, "w");
+    if (!f) {
+        printf("Error: cannot write to %s\n", fname);
+        free(json_str);
+        return;
+    }
+    fprintf(f, "%s\n", json_str);
+    fclose(f);
+    free(json_str);
+
+    printf("Exported %d messages → %s\n", count, fname);
+}
+
 static void cmd_model(llm_runtime_t *rt) {
     if (!g_models) {
         printf("No models loaded (check ~/.cop/models.json).\n");
@@ -577,6 +621,10 @@ coroutine void cop_ui_repl(llm_runtime_t *rt) {
             cmd_model(rt);
             free(line); continue;
         }
+        if (strcmp(line, "/export") == 0) {
+            cmd_export(rt);
+            free(line); continue;
+        }
         if (strncmp(line, "/set_model ", 11) == 0) {
             cmd_set_model(rt, line + 11);
             free(line); continue;
@@ -631,7 +679,7 @@ void cop_ui_banner(const char *model, const char *endpoint,
     if (g_rt && llm_runtime_is_yolo(g_rt))
         printf("Mode:     YOLO — auto-approving all tool calls\n");
     printf("Input:    Enter=submit, Shift+Enter/Ctrl+J=newline\n");
-    printf("Commands: /model, /set_model <id>, /sessions, /load, /delete\n");
+    printf("Commands: /model, /set_model <id>, /sessions, /load, /delete, /export\n");
 }
 
 void cop_ui_sigint(int sig, siginfo_t *info, void *uap) {
