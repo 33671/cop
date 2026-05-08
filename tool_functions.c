@@ -46,19 +46,30 @@ static cJSON *new_text_result(const char *msg) {
  * ============================================================================ */
 
 /* Ask y/N. Returns 1 approved, 0 denied, -1 Ctrl+C.
+   Empty/whitespace → approve; only 'n'/'N' → deny.
    In --yolo mode, skips prompt and always returns 1. */
 static int ask_approval(llm_runtime_t *rt, const char *prompt) {
     (void)rt;
     if (llm_runtime_is_yolo(rt)) return 1;
+    ic_enable_multiline(false);  /* singleline: Enter → submit */
     char *reply = ic_readline(prompt);
+    ic_enable_multiline(true);   /* restore */
     if (ic_was_interrupted()) { free(reply); return -1; }
     if (!reply)               return -1;
     size_t rlen = strlen(reply);
     while (rlen > 0 && (reply[rlen-1] == '\n' || reply[rlen-1] == '\r'))
         reply[--rlen] = '\0';
-    int ok = (rlen > 0 && (reply[0] == 'y' || reply[0] == 'Y'));
+    /* Only 'n'/'N' denies; everything else (empty, spaces, 'y', etc.) approves */
+    int denied = 0;
+    for (size_t i = 0; i < rlen; i++) {
+        if (reply[i] == 'n' || reply[i] == 'N') {
+            denied = 1;
+            break;
+        }
+        if (reply[i] != ' ' && reply[i] != '\t') break; /* stop at first non-whitespace */
+    }
     free(reply);
-    return ok;
+    return denied ? 0 : 1;
 }
 
 /* Full approval flow: ask prompt, then either cancel runtime, deny with

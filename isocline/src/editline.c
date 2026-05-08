@@ -926,9 +926,11 @@ static char* edit_line( ic_env_t* env, const char* prompt_text )
       break;
     }
     else if (c == KEY_ENTER) {
-      // Enter inserts newline (like Shift+Enter)
+      // Multiline: insert newline. Singleline: submit.
       if (!env->singleline_only) { 
         edit_insert_char(env, &eb, '\n'); 
+      } else {
+        break;
       }
     } 
     else if (c == KEY_CTRL_D) {
