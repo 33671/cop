@@ -154,6 +154,7 @@ stream_client_t *stream_client_new(const char *api_key,
     c->data_pipe[1] = -1;
     c->max_retries = 3;
     c->retry_delay_ms = 1000;
+    c->max_tokens = 0;
     
     /* Initialize parent process buffer */
     if (stream_buffer_init(&c->main_buffer) != 0) {
@@ -285,6 +286,11 @@ void stream_client_set_retry_delay(stream_client_t *c, int delay_ms) {
     c->retry_delay_ms = (delay_ms >= 0) ? delay_ms : 1000;
 }
 
+void stream_client_set_max_tokens(stream_client_t *c, int max_tokens) {
+    if (!c) return;
+    c->max_tokens = (max_tokens >= 0) ? max_tokens : 0;
+}
+
 /* ============================================================================
  * Request Body Builder
  * ============================================================================ */
@@ -349,7 +355,9 @@ static char *build_request_body(stream_client_t *c, cJSON *messages) {
     /* Streaming configuration */
     cJSON_AddBoolToObject(root, "stream", 1);
     cJSON_AddNumberToObject(root, "temperature", c->temperature);
-    cJSON_AddNumberToObject(root, "max_tokens", 4096);
+    if (c->max_tokens > 0) {
+        cJSON_AddNumberToObject(root, "max_tokens", c->max_tokens);
+    }
     
     /* Serialize to string */
     char *body = cJSON_PrintUnformatted(root);

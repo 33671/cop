@@ -104,6 +104,10 @@ int main(int argc, char *argv[]) {
     }
     if (yolo_flag) llm_runtime_set_yolo(rt, 1);
 
+    /* Set max_tokens from model config (0 = let API use default) */
+    if (g_models[0]->max_tokens > 0)
+        llm_runtime_set_max_tokens(rt, g_models[0]->max_tokens);
+
     /* Capture working directory */
     if (!getcwd(g_cwd, sizeof(g_cwd))) g_cwd[0] = '\0';
 

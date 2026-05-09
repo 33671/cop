@@ -187,6 +187,251 @@ static char *read_file_at(const char *abs_path, size_t max_bytes,
 }
 
 /* ============================================================================
+ * Shared Helpers — line-based diff
+ * ============================================================================ */
+
+/*
+ * Line-based diff: compares old and new content and produces a compact
+ * unified-diff-style output.  Only changed regions (with 3 lines of
+ * context) are included.
+ *
+ * On success, *diff_out is set to a malloc'd string (caller frees) and
+ * the function returns its length.  On failure returns -1.
+ */
+static int generate_diff(const char *old, size_t old_len,
+                          const char *new, size_t new_len,
+                          char **diff_out) {
+    *diff_out = NULL;
+    if (!old || !new) return -1;
+
+    /* Split old into lines */
+    size_t   old_cap = 64;
+    size_t   old_cnt = 0;
+    char   **old_lines = malloc(old_cap * sizeof(char *));
+    if (!old_lines) return -1;
+
+    const char *p = old;
+    const char *eof = old + old_len;
+    while (p < eof) {
+        const char *eol = memchr(p, '\n', eof - p);
+        size_t len = eol ? (size_t)(eol - p) : (size_t)(eof - p);
+        char *line = malloc(len + 1);
+        if (!line) goto cleanup_old;
+        memcpy(line, p, len);
+        line[len] = '\0';
+        if (old_cnt >= old_cap) {
+            old_cap *= 2;
+            char **tmp = realloc(old_lines, old_cap * sizeof(char *));
+            if (!tmp) { free(line); goto cleanup_old; }
+            old_lines = tmp;
+        }
+        old_lines[old_cnt++] = line;
+        p = eol ? eol + 1 : eof;
+    }
+
+    /* Split new into lines */
+    size_t   new_cap = 64;
+    size_t   new_cnt = 0;
+    char   **new_lines = malloc(new_cap * sizeof(char *));
+    if (!new_lines) goto cleanup_old;
+
+    p = new;
+    eof = new + new_len;
+    while (p < eof) {
+        const char *eol = memchr(p, '\n', eof - p);
+        size_t len = eol ? (size_t)(eol - p) : (size_t)(eof - p);
+        char *line = malloc(len + 1);
+        if (!line) goto cleanup_new;
+        memcpy(line, p, len);
+        line[len] = '\0';
+        if (new_cnt >= new_cap) {
+            new_cap *= 2;
+            char **tmp = realloc(new_lines, new_cap * sizeof(char *));
+            if (!tmp) { free(line); goto cleanup_new; }
+            new_lines = tmp;
+        }
+        new_lines[new_cnt++] = line;
+        p = eol ? eol + 1 : eof;
+    }
+
+    /* Build output: walk both arrays, find hunks, emit diff */
+    size_t out_cap = 4096;
+    size_t out_len = 0;
+    char  *out = malloc(out_cap);
+    if (!out) goto cleanup_new;
+    out[0] = '\0';
+
+    size_t oi = 0, ni = 0;  /* current position in old/new lines */
+
+    while (oi < old_cnt || ni < new_cnt) {
+        /* Skip common prefix */
+        size_t common_start = 0;
+        while (oi < old_cnt && ni < new_cnt &&
+               strcmp(old_lines[oi], new_lines[ni]) == 0) {
+            oi++; ni++; common_start++;
+        }
+        if (common_start == 0 && oi >= old_cnt && ni >= new_cnt) break;
+        if (oi >= old_cnt && ni >= new_cnt) break;
+
+        /* Find the changed hunk */
+        size_t hunk_old_start = oi;
+        size_t hunk_new_start = ni;
+
+        /* Find where old and new re-sync after the change */
+        size_t sync_old = old_cnt;
+        size_t sync_new = new_cnt;
+        for (size_t o = oi; o < old_cnt; o++) {
+            for (size_t n = ni; n < new_cnt; n++) {
+                if (strcmp(old_lines[o], new_lines[n]) == 0) {
+                    /* Check if this is a plausible re-sync point */
+                    size_t match = 0;
+                    size_t mo = o, mn = n;
+                    while (mo < old_cnt && mn < new_cnt &&
+                           strcmp(old_lines[mo], new_lines[mn]) == 0 &&
+                           match < 3) {
+                        mo++; mn++; match++;
+                    }
+                    if (match >= 2 || (o == oi && n == ni)) {
+                        sync_old = o;
+                        sync_new = n;
+                        goto found_sync;
+                    }
+                }
+            }
+        }
+found_sync:
+
+        /* Compute context: show 3 lines before and after */
+        size_t ctx_before = (hunk_old_start >= 3) ? 3 : hunk_old_start;
+        size_t hunk_old_end = sync_old;
+        size_t hunk_new_end = sync_new;
+        size_t ctx_after  = 0;
+        /* Look ahead for more changes near the sync point */
+        size_t look_old = sync_old, look_new = sync_new;
+        while (look_old < old_cnt && look_new < new_cnt &&
+               strcmp(old_lines[look_old], new_lines[look_new]) == 0 &&
+               ctx_after < 3) {
+            look_old++; look_new++; ctx_after++;
+        }
+
+        /* Emit hunk header */
+        size_t old_display_start = hunk_old_start - ctx_before + 1;  /* 1-indexed */
+        size_t old_display_count = (hunk_old_end - hunk_old_start) + ctx_before + ctx_after;
+        size_t new_display_start = hunk_new_start - ctx_before + 1;  /* 1-indexed */
+        size_t new_display_count = (hunk_new_end - hunk_new_start) + ctx_before + ctx_after;
+
+        char header[128];
+        int hdr_len = snprintf(header, sizeof(header),
+                               "@@ -%zu,%zu +%zu,%zu @@\n",
+                               old_display_start, old_display_count,
+                               new_display_start, new_display_count);
+        if (out_len + (size_t)hdr_len + 1 >= out_cap) {
+            out_cap = (out_cap * 2 > out_len + hdr_len + 1)
+                      ? out_cap * 2 : out_len + hdr_len + 256;
+            char *tmp = realloc(out, out_cap);
+            if (!tmp) { free(out); goto cleanup_new; }
+            out = tmp;
+        }
+        memcpy(out + out_len, header, hdr_len);
+        out_len += hdr_len;
+
+        /* Emit context before */
+        for (size_t i = hunk_old_start - ctx_before; i < hunk_old_start; i++) {
+            if (i >= old_cnt) break;
+            size_t need = out_len + strlen(old_lines[i]) + 3;
+            if (need >= out_cap) {
+                out_cap = out_cap * 2;
+                if (out_cap < need) out_cap = need + 256;
+                char *tmp = realloc(out, out_cap);
+                if (!tmp) { free(out); goto cleanup_new; }
+                out = tmp;
+            }
+            out[out_len++] = ' ';
+            size_t ln = strlen(old_lines[i]);
+            memcpy(out + out_len, old_lines[i], ln);
+            out_len += ln;
+            out[out_len++] = '\n';
+        }
+
+        /* Emit removed lines */
+        for (size_t i = hunk_old_start; i < hunk_old_end; i++) {
+            if (i >= old_cnt) break;
+            size_t need = out_len + strlen(old_lines[i]) + 3;
+            if (need >= out_cap) {
+                out_cap = out_cap * 2;
+                if (out_cap < need) out_cap = need + 256;
+                char *tmp = realloc(out, out_cap);
+                if (!tmp) { free(out); goto cleanup_new; }
+                out = tmp;
+            }
+            out[out_len++] = '-';
+            size_t ln = strlen(old_lines[i]);
+            memcpy(out + out_len, old_lines[i], ln);
+            out_len += ln;
+            out[out_len++] = '\n';
+        }
+
+        /* Emit added lines */
+        for (size_t i = hunk_new_start; i < hunk_new_end; i++) {
+            if (i >= new_cnt) break;
+            size_t need = out_len + strlen(new_lines[i]) + 3;
+            if (need >= out_cap) {
+                out_cap = out_cap * 2;
+                if (out_cap < need) out_cap = need + 256;
+                char *tmp = realloc(out, out_cap);
+                if (!tmp) { free(out); goto cleanup_new; }
+                out = tmp;
+            }
+            out[out_len++] = '+';
+            size_t ln = strlen(new_lines[i]);
+            memcpy(out + out_len, new_lines[i], ln);
+            out_len += ln;
+            out[out_len++] = '\n';
+        }
+
+        /* Emit context after */
+        for (size_t i = hunk_old_end; i < hunk_old_end + ctx_after && i < old_cnt; i++) {
+            size_t need = out_len + strlen(old_lines[i]) + 3;
+            if (need >= out_cap) {
+                out_cap = out_cap * 2;
+                if (out_cap < need) out_cap = need + 256;
+                char *tmp = realloc(out, out_cap);
+                if (!tmp) { free(out); goto cleanup_new; }
+                out = tmp;
+            }
+            out[out_len++] = ' ';
+            size_t ln = strlen(old_lines[i]);
+            memcpy(out + out_len, old_lines[i], ln);
+            out_len += ln;
+            out[out_len++] = '\n';
+        }
+
+        /* Advance past the hunk */
+        oi = hunk_old_end + ctx_after;
+        ni = hunk_new_end + ctx_after;
+    }
+
+    out[out_len] = '\0';
+
+    /* Cleanup lines */
+    for (size_t i = 0; i < old_cnt; i++) free(old_lines[i]);
+    for (size_t i = 0; i < new_cnt; i++) free(new_lines[i]);
+    free(old_lines);
+    free(new_lines);
+
+    *diff_out = out;
+    return (int)out_len;
+
+cleanup_new:
+    for (size_t i = 0; i < new_cnt; i++) free(new_lines[i]);
+    free(new_lines);
+cleanup_old:
+    for (size_t i = 0; i < old_cnt; i++) free(old_lines[i]);
+    free(old_lines);
+    return -1;
+}
+
+/* ============================================================================
  * Shared Helpers — output sanitization
  * ============================================================================ */
 
@@ -583,28 +828,7 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
         return result;
     }
 
-    /* Preview */
-    size_t match_offset = (size_t)(first_match - buf);
-    printf("\n  [tool] editing: %s\n", abs_path);
-    printf("  [%s]\n", replace_all
-           ? "replacing ALL occurrences" : "replacing first occurrence only");
-    printf("  [context around 'old' (offset %zu)]\n", match_offset);
-    size_t ctx_start = (match_offset > 60) ? match_offset - 60 : 0;
-    printf("  ---\n%.*s\033[31m%s\033[0m%.*s\n  ---\n"
-           "  replacement:\n\033[32m%s\033[0m\n  ---\n",
-           (int)(match_offset - ctx_start), buf + ctx_start,
-           old_str,
-           (int)((match_offset + old_len + 60 > nread)
-                 ? nread - (match_offset + old_len) : 60),
-           buf + match_offset + old_len,
-           new_str);
-
-    if (!check_approval(rt, result,
-            "[yellow][b]Apply this edit? y/N[/] ",
-            "user denied file edit"))
-        { free(buf); free(abs_path); return result; }
-
-    /* Perform replacement */
+    /* Perform replacement (compute new_content before preview for diff) */
     char  *new_content = NULL;
     size_t new_size    = 0;
 
@@ -653,30 +877,86 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
         return result;
     }
 
+    /* Generate diff for preview and result */
+    char *diff_text = NULL;
+    int diff_len = generate_diff(buf, nread, new_content, new_size, &diff_text);
+
+    /* Preview: show file path, replace mode, and diff */
+    printf("\n  [tool] editing: %s\n", abs_path);
+    printf("  [%s]\n", replace_all
+           ? "replacing ALL occurrences" : "replacing first occurrence only");
+    if (diff_text && diff_len > 0) {
+        printf("  [diff]\n");
+        /* Print diff with color: - lines in red, + lines in green */
+        const char *dp = diff_text;
+        while (*dp) {
+            const char *eol = strchr(dp, '\n');
+            if (!eol) eol = dp + strlen(dp);
+            if (*dp == '-') {
+                printf("\033[31m%.*s\033[0m\n", (int)(eol - dp), dp);
+            } else if (*dp == '+') {
+                printf("\033[32m%.*s\033[0m\n", (int)(eol - dp), dp);
+            } else if (*dp == '@') {
+                printf("\033[36m%.*s\033[0m\n", (int)(eol - dp), dp);
+            } else {
+                printf("%.*s\n", (int)(eol - dp), dp);
+            }
+            dp = (*eol == '\n') ? eol + 1 : eol;
+        }
+    }
+
+    if (!check_approval(rt, result,
+            "[yellow][b]Apply this edit? y/N[/] ",
+            "user denied file edit"))
+        { free(new_content); free(buf); free(diff_text); free(abs_path); return result; }
+
+    /* Write to file */
     FILE *out_f = fopen(abs_path, "wb");
     if (!out_f) {
         char eb[512];
         snprintf(eb, sizeof(eb),
             "Error processing file '%s' (resolved from '%s'): %s",
             abs_path, path, strerror(errno));
-        free(new_content); free(buf); free(abs_path);
+        free(new_content); free(buf); free(diff_text); free(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
         return result;
     }
     size_t wrote = fwrite(new_content, 1, new_size, out_f);
     fclose(out_f);
 
-    char summary[512];
-    if (wrote != new_size)
+    /* Build result: short summary + diff */
+    char summary[1024];
+    if (wrote != new_size) {
         snprintf(summary, sizeof(summary),
             "Error: wrote %zu/%zu bytes to %s (disk full?)",
             wrote, new_size, abs_path);
-    else
-        snprintf(summary, sizeof(summary), "Successfully replaced in %s", abs_path);
-    printf("  [tool] %s\n", summary);
-    cJSON_AddStringToObject(result, "text", summary);
+    } else {
+        snprintf(summary, sizeof(summary),
+            "Edit applied to %s (%zu bytes)\n",
+            abs_path, new_size);
+    }
+    printf("  [tool] %s", summary);
 
-    free(new_content); free(buf); free(abs_path);
+    /* Combine summary + diff for the result text */
+    size_t result_text_len = strlen(summary) + (diff_text ? (size_t)diff_len : 0) + 2;
+    char *result_text = malloc(result_text_len);
+    if (result_text) {
+        size_t pos = 0;
+        memcpy(result_text + pos, summary, strlen(summary));
+        pos += strlen(summary);
+        if (diff_text && diff_len > 0) {
+            result_text[pos++] = '\n';
+            memcpy(result_text + pos, diff_text, diff_len);
+            pos += diff_len;
+        }
+        result_text[pos] = '\0';
+        cJSON_AddStringToObject(result, "text", result_text);
+        free(result_text);
+    } else {
+        cJSON_AddStringToObject(result, "text", summary);
+    }
+
+    free(new_content); free(buf); free(diff_text); free(abs_path);
     return result;
 }
 

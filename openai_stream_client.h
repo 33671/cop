@@ -72,6 +72,9 @@ typedef struct stream_client {
     int max_retries;                 /* max retry attempts (default 3) */
     int retry_delay_ms;              /* delay between retries in ms (default 1000) */
     
+    /* Token limits */
+    int max_tokens;                  /* max tokens per response (0 = omit, use API default) */
+    
     /* Logging */
     FILE *log_fp;
     char *log_filename;
@@ -128,6 +131,12 @@ void stream_client_set_tool_schemas(stream_client_t *c, const cJSON *schemas);
  */
 void stream_client_set_max_retries(stream_client_t *c, int max_retries);
 void stream_client_set_retry_delay(stream_client_t *c, int delay_ms);
+
+/*
+ * Set max tokens per response.
+ * 0 (default) = omit from request body, let the API use its own default.
+ */
+void stream_client_set_max_tokens(stream_client_t *c, int max_tokens);
 
 /* ============================================================================
  * Streaming API

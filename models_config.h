@@ -22,6 +22,7 @@ typedef struct {
     char *api_key;        /* provider API key */
     char *model_id;       /* e.g. "deepseek-v4-pro" */
     int   context_window; /* max context window size */
+    int   max_tokens;     /* max tokens per response (0 = use API default) */
 } model_entry_t;
 
 /*

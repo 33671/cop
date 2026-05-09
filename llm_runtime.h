@@ -132,6 +132,12 @@ void llm_runtime_free(llm_runtime_t *rt);
 void llm_runtime_set_system_message(llm_runtime_t *rt, const char *msg);
 void llm_runtime_set_temperature(llm_runtime_t *rt, double temp);
 
+/*
+ * Set max tokens per API response.
+ * 0 (default) = omit from request, using the API provider's default.
+ */
+void llm_runtime_set_max_tokens(llm_runtime_t *rt, int max_tokens);
+
 /* Switch model / API configuration at runtime. Returns 0 on success. */
 int  llm_runtime_set_model(llm_runtime_t *rt, const char *model,
                              const char *api_key, const char *api_endpoint);

@@ -122,6 +122,11 @@ void llm_runtime_set_temperature(llm_runtime_t *rt, double temp) {
     stream_client_set_temperature(rt->client, temp);
 }
 
+void llm_runtime_set_max_tokens(llm_runtime_t *rt, int max_tokens) {
+    if (!rt) return;
+    stream_client_set_max_tokens(rt->client, max_tokens);
+}
+
 int llm_runtime_set_model(llm_runtime_t *rt, const char *model,
                             const char *api_key, const char *api_endpoint) {
     if (!rt || !model) return -1;

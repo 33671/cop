@@ -117,6 +117,7 @@ model_entry_t **models_config_load(void) {
                 cJSON *m   = cJSON_GetArrayItem(models, i);
                 cJSON *mid = cJSON_GetObjectItem(m, "id");
                 cJSON *cw  = cJSON_GetObjectItem(m, "contextWindow");
+                cJSON *mt  = cJSON_GetObjectItem(m, "maxTokens");
 
                 if (!mid || !cJSON_IsString(mid)) continue;
 
@@ -126,6 +127,7 @@ model_entry_t **models_config_load(void) {
                 entry->api_key        = strdup(key);
                 entry->model_id       = strdup(mid->valuestring);
                 entry->context_window = (cw && cJSON_IsNumber(cw)) ? cw->valueint : 0;
+                entry->max_tokens     = (mt && cJSON_IsNumber(mt)) ? mt->valueint : 0;
 
                 entries[idx++] = entry;
             }
