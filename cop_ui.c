@@ -633,17 +633,14 @@ coroutine void cop_ui_repl(llm_runtime_t *rt) {
         /* ── Send message ── */
         fflush(stdout);
         int ret = llm_runtime_send(rt, line, on_runtime_event, NULL);
-        if (ret != 0) {
-            if (llm_runtime_is_cancelled(rt)) {
-                printf("\n[Cancelled]\n");
-                save_history_step(rt);
-            } else {
-                const char *err = llm_runtime_get_error(rt);
-                printf("\n\033[31mError: %s\033[0m\n", err ? err : "send failed");
-            }
-        } else {
-            save_history_step(rt);
+        if (llm_runtime_is_cancelled(rt)) {
+            printf("\n[Cancelled]\n");
         }
+        if (ret != 0) {
+            const char *err = llm_runtime_get_error(rt);
+            printf("\n\033[31mError: %s\033[0m\n", err ? err : "send failed");
+        }
+        save_history_step(rt);
 
         free(line);
         msleep(now() + 100);

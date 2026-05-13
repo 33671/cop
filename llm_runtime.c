@@ -553,13 +553,31 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
          * Accumulated content/reasoning is preserved; incomplete tool
          * calls are discarded.
          */
-        if (stream_was_cancelled || llm_runtime_is_cancelled(rt) ||
-            stream_client_get_state(rt->client) == CLIENT_STATE_ERROR) {
+        int stream_error = (stream_client_get_state(rt->client) == CLIENT_STATE_ERROR
+                            && !stream_was_cancelled && !llm_runtime_is_cancelled(rt));
+        if (stream_was_cancelled || llm_runtime_is_cancelled(rt) || stream_error) {
             llm_parser_force_finish(rt->parser);
+
+            if (stream_error) {
+                /* Genuine mid-stream error (not user cancellation).
+                 * Report it so the REPL can show an error message. */
+                int ec = stream_client_get_error_code(rt->client);
+                const char *emsg = stream_client_get_error_message(rt->client);
+                if (ec > 0 && emsg) {
+                    set_error(rt, "stream error (code %d): %s", ec, emsg);
+                } else {
+                    set_error(rt, "stream error: connection lost mid-response");
+                }
+                if (on_chunk) {
+                    on_chunk(rt, LLM_RT_EVENT_ERROR, rt->error_msg,
+                             NULL, user_data);
+                }
+            }
+
             if (on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
             }
-            return 0;
+            return stream_error ? -1 : 0;
         }
 
         /* ---- Step 6: Check for tool calls in the last assistant message ---- */
