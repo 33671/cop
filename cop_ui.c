@@ -682,9 +682,11 @@ void cop_ui_banner(const char *model, const char *endpoint,
 void cop_ui_sigint(int sig, siginfo_t *info, void *uap) {
     (void)sig; (void)info; (void)uap;
     if (g_rt && !llm_runtime_is_cancelled(g_rt)) {
+        fprintf(stderr, "\n[debug] SIGINT: cancelling runtime\n");
         llm_runtime_cancel(g_rt);
         write(STDOUT_FILENO, "\n[Cancelling...]\n", 17);
     } else {
+        fprintf(stderr, "\n[debug] SIGINT: already cancelled, exiting\n");
         write(STDOUT_FILENO, "\n[Exiting...]\n", 14);
         _exit(0);
     }
