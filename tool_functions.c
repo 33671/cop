@@ -497,13 +497,18 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
     size_t wrote = fwrite(content, 1, content_len, f);
     fclose(f);
 
-    sds sum = sdscatprintf(sdsempty(),
-        wrote != content_len
-        ? "Error: wrote %zu/%zu bytes to %s (disk full?)"
-        : (strcmp(mode, "append") == 0
-           ? "Successfully appended to %s"
-           : "Successfully wrote to %s"),
-        wrote, content_len, abs_path);
+    sds sum;
+    if (wrote != content_len) {
+        sum = sdscatprintf(sdsempty(),
+            "Error: wrote %zu/%zu bytes to %s (disk full?)",
+            wrote, content_len, abs_path);
+    } else if (strcmp(mode, "append") == 0) {
+        sum = sdscatprintf(sdsempty(),
+            "Successfully appended to %s", abs_path);
+    } else {
+        sum = sdscatprintf(sdsempty(),
+            "Successfully wrote to %s", abs_path);
+    }
     printf("  [tool] %s\n", sum);
     sdsfree(abs_path);
     cJSON_AddStringToObject(result, "text", sum);
@@ -719,7 +724,7 @@ void tool_functions_add_shell_schema(cJSON *schemas) {
         "Useful for: ls, cat, grep, find, wc, date, curl, git status, etc. "
         "Avoid commands that run forever or require interactive input. "
         "For long-running commands, use timeout prefixes like 'timeout 30s ...' "
-        "to manually control the time limit.");
+        "to manually control the time limit. When a command requires root privilege, don't run it yourself, ask the user to run it.");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
