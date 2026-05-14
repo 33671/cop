@@ -2,48 +2,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sds/sds.h"
 #include "tool_call_parser.h"
 
 /* 内部辅助：向 slot 追加 arguments 字符串片段 */
 static int append_arguments(ToolCallSlot *slot, const char *frag) {
-    size_t frag_len = strlen(frag);
-    if (frag_len == 0) return 0;
-
-    size_t needed = slot->args_len + frag_len + 1;
-    if (needed > slot->args_cap) {
-        size_t new_cap = needed * 2;
-        char *new_buf = realloc(slot->arguments, new_cap);
-        if (!new_buf) return -1; /* OOM */
-        slot->arguments = new_buf;
-        slot->args_cap = new_cap;
-    }
-    memcpy(slot->arguments + slot->args_len, frag, frag_len);
-    slot->args_len += frag_len;
-    slot->arguments[slot->args_len] = '\0';
+    if (!frag || !*frag) return 0;
+    sds cur = slot->arguments ? slot->arguments : sdsempty();
+    sds new_args = sdscat(cur, frag);
+    if (!new_args) return -1;
+    slot->arguments = new_args;
     return 0;
 }
 
 /* 初始化 slot */
 static void init_slot(ToolCallSlot *slot, const char *id, const char *name) {
     slot->active = 1;
-    free(slot->id);
-    free(slot->name);
-    slot->id = id ? strdup(id) : strdup("");
-    slot->name = name ? strdup(name) : strdup("");
-    free(slot->arguments);
-    slot->arguments = NULL;
-    slot->args_len = 0;
-    slot->args_cap = 0;
+    sdsfree(slot->id);
+    sdsfree(slot->name);
+    slot->id = id ? sdsnew(id) : sdsempty();
+    slot->name = name ? sdsnew(name) : sdsempty();
+    sdsfree(slot->arguments);
+    slot->arguments = sdsempty();
 }
 
 /* 清理一个 slot */
 static void free_slot(ToolCallSlot *slot) {
-    free(slot->id);
-    free(slot->name);
-    free(slot->arguments);
+    sdsfree(slot->id);
+    sdsfree(slot->name);
+    sdsfree(slot->arguments);
     slot->id = slot->name = slot->arguments = NULL;
     slot->active = 0;
-    slot->args_len = slot->args_cap = 0;
 }
 
 void toolcall_parser_init(ToolCallDeltaParser *parser) {
@@ -115,9 +104,9 @@ static int process_toolcall_chunk(ToolCallDeltaParser *parser, const cJSON *tc_a
         if (func) {
             /* 更新 name (如果此时才出现) */
             cJSON *name_item = cJSON_GetObjectItem(func, "name");
-            if (cJSON_IsString(name_item) && (!slot->name || strlen(slot->name) == 0)) {
-                free(slot->name);
-                slot->name = strdup(name_item->valuestring);
+            if (cJSON_IsString(name_item) && (!slot->name || sdslen(slot->name) == 0)) {
+                sdsfree(slot->name);
+                slot->name = sdsnew(name_item->valuestring);
             }
 
             /* 拼接 arguments 片段 */
@@ -156,7 +145,7 @@ static cJSON *build_final_toolcalls(ToolCallDeltaParser *parser) {
 
         cJSON_AddStringToObject(func_obj, "name", slot->name ? slot->name : "");
         /* arguments 字段：直接填入累积的字符串 */
-        if (slot->arguments && strlen(slot->arguments) > 0) {
+        if (slot->arguments && sdslen(slot->arguments) > 0) {
             cJSON_AddStringToObject(func_obj, "arguments", slot->arguments);
         } else {
             cJSON_AddStringToObject(func_obj, "arguments", "");
@@ -256,9 +245,10 @@ const char *toolcall_parser_get_preview(const ToolCallDeltaParser *parser,
         if (pos + 2 < bufsz) { buf[pos++] = ' '; buf[pos] = '\0'; }
 
         /* Arguments — keep tail when truncating so scroll shows latest content */
-        if (slot->arguments && slot->args_len > 0) {
+        size_t args_len = slot->arguments ? sdslen(slot->arguments) : 0;
+        if (slot->arguments && args_len > 0) {
             size_t arem = bufsz - pos - 4;  /* room for "..." + \0 */
-            if (slot->args_len > arem) {
+            if (args_len > arem) {
                 /* Truncate: show "..." then tail of args */
                 if (pos + 3 < bufsz) {
                     memcpy(buf + pos, "...", 3);
@@ -267,12 +257,12 @@ const char *toolcall_parser_get_preview(const ToolCallDeltaParser *parser,
                 size_t tail = arem - 3;  /* bytes left after "..." */
                 if (tail > 0) {
                     memcpy(buf + pos,
-                           slot->arguments + slot->args_len - tail, tail);
+                           slot->arguments + args_len - tail, tail);
                     pos += tail;
                 }
             } else {
-                memcpy(buf + pos, slot->arguments, slot->args_len);
-                pos += slot->args_len;
+                memcpy(buf + pos, slot->arguments, args_len);
+                pos += args_len;
             }
             buf[pos] = '\0';
         }

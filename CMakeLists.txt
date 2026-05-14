@@ -26,6 +26,13 @@ set(LIBMILL_SOURCES
     libmill/ssl.c
 )
 set(CJSON_SOURCES cjson/cJSON.c)
+
+# SDS dynamic string library
+add_library(sds STATIC sds/sds.c)
+target_include_directories(sds PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
+)
+
 # Add libmill library
 add_library(mill STATIC ${LIBMILL_SOURCES})
 add_library(cjson STATIC ${CJSON_SOURCES})
@@ -70,10 +77,12 @@ add_library(openai_sse_parser STATIC
 )
 target_link_libraries(openai_sse_parser 
     cjson
+    sds
 )
 target_include_directories(openai_sse_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
 
 # Stream Client library (libmill + pthread + curl)
@@ -86,10 +95,12 @@ add_library(tool_call_parser STATIC
 )
 target_link_libraries(tool_call_parser 
     cjson
+    sds
 )
 target_include_directories(tool_call_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
 
 add_library(llm_parser STATIC llm_parser.c)
@@ -97,6 +108,10 @@ target_link_libraries(llm_parser
     cjson
     openai_sse_parser
     tool_call_parser
+    sds
+)
+target_include_directories(llm_parser PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
 
 # LLM Runtime (high-level orchestration)
@@ -167,11 +182,13 @@ add_library(history_db STATIC history_db.c)
 target_link_libraries(history_db
     sqlite3
     cjson
+    sds
 )
 target_include_directories(history_db PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
     ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
 
 # Models configuration (parses ~/.agent/models.json)

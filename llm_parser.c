@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <assert.h>
+#include "sds/sds.h"
 #include "cjson/cJSON.h"
 #include "llm_parser.h"
 #include "openai_sse_parser.h"
@@ -26,10 +27,8 @@ struct LlmParser {
     /* Temporary assistant build area */
     struct {
         cJSON *msg;
-        char *content_buf;
-        size_t content_len;
-        char *reasoning_buf;
-        size_t reasoning_len;
+        sds content_buf;
+        sds reasoning_buf;
         /* Last reported status for empty chunks */
         LlmParserStatus last_status;
     } assistant;
@@ -56,17 +55,14 @@ static void set_error(LlmParser *p, const char *fmt, ...)
     p->state = STATE_ERROR;
 }
 
-/* Append src to dst. Returns new pointer or NULL on OOM (dst is still valid). */
-static char *str_append(char *dst, size_t *dst_len, const char *src)
+/* Append src to dst using sds. */
+static sds str_append(sds dst, const char *src)
 {
     if (!src || !*src) return dst;
-    size_t src_len = strlen(src);
-    char *tmp = realloc(dst, *dst_len + src_len + 1);
-    if (!tmp) return NULL;
-    dst = tmp;
-    memcpy(dst + *dst_len, src, src_len + 1);
-    *dst_len += src_len;
-    return dst;
+    if (!dst) dst = sdsempty();
+    sds new_dst = sdscat(dst, src);
+    if (!new_dst) return NULL;
+    return new_dst;
 }
 
 static void reset_assistant(LlmParser *p)
@@ -75,13 +71,11 @@ static void reset_assistant(LlmParser *p)
         cJSON_Delete(p->assistant.msg);
         p->assistant.msg = NULL;
     }
-    free(p->assistant.content_buf);
+    sdsfree(p->assistant.content_buf);
     p->assistant.content_buf = NULL;
-    p->assistant.content_len = 0;
 
-    free(p->assistant.reasoning_buf);
+    sdsfree(p->assistant.reasoning_buf);
     p->assistant.reasoning_buf = NULL;
-    p->assistant.reasoning_len = 0;
     // reset tool call parser
     toolcall_parser_reset(&p->tool_call_parser);
 
@@ -101,7 +95,7 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
     }
 
     /* reasoning_content (OpenAI extended field) — check first */
-    int has_reasoning = (p->assistant.reasoning_buf && p->assistant.reasoning_len > 0);
+    int has_reasoning = (p->assistant.reasoning_buf && sdslen(p->assistant.reasoning_buf) > 0);
     if (has_reasoning) {
         cJSON_AddStringToObject(msg, "reasoning_content", p->assistant.reasoning_buf);
     }
@@ -118,7 +112,7 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
      * If we have tool_calls, content can be null (API accepts it).
      * If we have neither content nor tool_calls (e.g. only reasoning),
      * use empty string to satisfy the API constraint. */
-    if (p->assistant.content_buf && p->assistant.content_len > 0) {
+    if (p->assistant.content_buf && sdslen(p->assistant.content_buf) > 0) {
         cJSON_AddStringToObject(msg, "content", p->assistant.content_buf);
     } else if (has_tool_calls) {
         cJSON_AddNullToObject(msg, "content");
@@ -272,8 +266,7 @@ LlmParserStatus llm_parser_feed_chunk(LlmParser *p, const StreamChunk *chunk)
      *  Reasoning content
      * ------------------------------------------------------------------ */
     if (chunk->reasoning_content && chunk->reasoning_content[0]) {
-        char *tmp = str_append(p->assistant.reasoning_buf,
-                               &p->assistant.reasoning_len,
+        sds tmp = str_append(p->assistant.reasoning_buf,
                                chunk->reasoning_content);
         if (!tmp) {
             set_error(p, "oom: appending reasoning");
@@ -289,8 +282,7 @@ LlmParserStatus llm_parser_feed_chunk(LlmParser *p, const StreamChunk *chunk)
      *  Normal content
      * ------------------------------------------------------------------ */
     if (chunk->content && chunk->content[0]) {
-        char *tmp = str_append(p->assistant.content_buf,
-                               &p->assistant.content_len,
+        sds tmp = str_append(p->assistant.content_buf,
                                chunk->content);
         if (!tmp) {
             set_error(p, "oom: appending content");
@@ -346,7 +338,7 @@ LlmParserStatus llm_parser_force_finish(LlmParser *p)
     }
 
     /* Finalize accumulated content */
-    if (p->assistant.content_buf && p->assistant.content_len > 0) {
+    if (p->assistant.content_buf && sdslen(p->assistant.content_buf) > 0) {
         cJSON_AddStringToObject(msg, "content", p->assistant.content_buf);
     } else if (p->tool_call_parser.any_active) {
         /* Had partial tool calls (discarded), still need content field */
@@ -358,7 +350,7 @@ LlmParserStatus llm_parser_force_finish(LlmParser *p)
     }
 
     /* Finalize accumulated reasoning */
-    if (p->assistant.reasoning_buf && p->assistant.reasoning_len > 0) {
+    if (p->assistant.reasoning_buf && sdslen(p->assistant.reasoning_buf) > 0) {
         cJSON_AddStringToObject(msg, "reasoning_content", p->assistant.reasoning_buf);
     }
 

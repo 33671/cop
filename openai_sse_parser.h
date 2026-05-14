@@ -11,6 +11,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include "cjson/cJSON.h"
+#include "sds/sds.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,14 +35,14 @@ const char* role_to_str(Role role);
  * ============================================================================ */
 typedef struct {
     /* Basic metadata */
-    char *id;                /* response id (may be NULL) */
+    sds id;                  /* response id (may be NULL) */
     // char *model;             /* model name (may be NULL) */
     long created;            /* timestamp (0 if missing) */
 
     /* Delta content (all nullable) */
     Role role;              /* ROLE_ASSISTANT, usually only not Unknown on first chunk */
-    char *content;           /* normal text content, NULL when reasoning*/
-    char *reasoning_content; /* thinking/reasoning text (OpenAI) */
+    sds content;             /* normal text content, NULL when reasoning*/
+    sds reasoning_content;   /* thinking/reasoning text (OpenAI) */
     int finish_reason_present; /* 1 if finish_reason exists */
     char finish_reason[32];
 

@@ -5,6 +5,7 @@
  */
 
 #include "history_db.h"
+#include "sds/sds.h"
 #include "sqlite/sqlite3.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,22 +25,17 @@ struct history_db {
  * Helpers
  * ============================================================================ */
 
-/* Expand ~ in path. Caller must free the result. */
-static char *expand_path(const char *path) {
+/* Expand ~ in path. Caller must sdsfree the result. */
+static sds expand_path(const char *path) {
     if (!path) return NULL;
 
     if (path[0] == '~') {
         const char *home = getenv("HOME");
         if (!home) home = "/tmp";
-
-        size_t len = strlen(home) + strlen(path); /* path includes ~ */
-        char *result = malloc(len);
-        if (!result) return NULL;
-        snprintf(result, len, "%s%s", home, path + 1);
-        return result;
+        return sdscatprintf(sdsempty(), "%s%s", home, path + 1);
     }
 
-    return strdup(path);
+    return sdsnew(path);
 }
 
 /* Create parent directories for a file path. */
@@ -88,7 +84,7 @@ int history_db_open(history_db_t **db_out) {
     history_db_t *db = calloc(1, sizeof(history_db_t));
     if (!db) return -1;
 
-    char *db_path = expand_path("~/.cop/history.sql");
+    sds db_path = expand_path("~/.cop/history.sql");
     if (!db_path) {
         free(db);
         return -1;
@@ -98,7 +94,7 @@ int history_db_open(history_db_t **db_out) {
     mkdir_p(db_path);
 
     int rc = sqlite3_open(db_path, &db->conn);
-    free(db_path);
+    sdsfree(db_path);
 
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[history_db] cannot open database: %s\n",

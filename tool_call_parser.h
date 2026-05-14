@@ -11,7 +11,8 @@
 #define TOOLCALL_PARSER_H
 
 #include "cjson/cJSON.h"
-#include "openai_sse_parser.h"  // 替换为你的 StreamChunk 头文件路径
+#include "openai_sse_parser.h"
+#include "sds/sds.h"
 
 /* 最多支持同时出现的并行 tool call index */
 #define MAX_TOOL_CALLS 256
@@ -19,11 +20,9 @@
 /* 单个工具调用的累积状态 */
 typedef struct {
     int active;             /* 1 表示该 index 已激活 */
-    char *id;               /* tool call id, 从第一个出现 id 的 chunk 复制 */
-    char *name;             /* function name, 同上 */
-    char *arguments;        /* 累积的 arguments 字符串片段 (未转义，就是服务器发来的原字符串) */
-    size_t args_len;        /* 当前 arguments 长度 (不含 '\0') */
-    size_t args_cap;        /* arguments 缓冲区容量 */
+    sds id;                 /* tool call id, 从第一个出现 id 的 chunk 复制 */
+    sds name;               /* function name, 同上 */
+    sds arguments;          /* 累积的 arguments 字符串片段 (未转义，就是服务器发来的原字符串) */
 } ToolCallSlot;
 
 /* 解析器的完整上下文 */

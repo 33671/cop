@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "sds/sds.h"
 #include "openai_sse_parser.h"
 
 #define INITIAL_BUFFER_SIZE 65536
@@ -104,10 +105,10 @@ int is_valid_json(const char *str, size_t len) {
 /* ============================================================================
  * StreamChunk Helper Functions
  * ============================================================================ */
-static char* safe_get_string(cJSON *obj, const char *key) {
+static sds safe_get_string(cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItem(obj, key);
     if (cJSON_IsString(item))
-        return strdup(item->valuestring);
+        return sdsnew(item->valuestring);
     return NULL;
 }
 
@@ -120,10 +121,9 @@ static int safe_get_int(cJSON *obj, const char *key, int default_val) {
 
 void stream_chunk_cleanup(StreamChunk *chunk) {
     if (!chunk) return;
-    free(chunk->id);
-    // free(chunk->model);
-    free(chunk->content);
-    free(chunk->reasoning_content);
+    sdsfree(chunk->id);
+    sdsfree(chunk->content);
+    sdsfree(chunk->reasoning_content);
     if (chunk->tool_calls) cJSON_Delete(chunk->tool_calls);
     memset(chunk, 0, sizeof(StreamChunk));
 }
@@ -148,11 +148,10 @@ int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src) {
         dst->finish_reason[sizeof(dst->finish_reason) - 1] = '\0';
     }
     
-    if (src->id) dst->id = strdup(src->id);
-    // if (src->model) dst->model = strdup(src->model);
+    if (src->id) dst->id = sdsdup(src->id);
     if (src->role) dst->role = src->role;
-    if (src->content) dst->content = strdup(src->content);
-    if (src->reasoning_content) dst->reasoning_content = strdup(src->reasoning_content);
+    if (src->content) dst->content = sdsdup(src->content);
+    if (src->reasoning_content) dst->reasoning_content = sdsdup(src->reasoning_content);
     if (src->tool_calls) dst->tool_calls = cJSON_Duplicate(src->tool_calls, 1);
     
     return 0;
@@ -211,7 +210,11 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
         goto check_usage;
     
     /* Extract delta fields */
-    chunk->role = str_to_role(safe_get_string(delta, "role"));
+    {
+        sds role_str = safe_get_string(delta, "role");
+        chunk->role = str_to_role(role_str);
+        sdsfree(role_str);
+    }
     chunk->content = safe_get_string(delta, "content");
     
     /* Reasoning content */
@@ -219,7 +222,7 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
     if (!cJSON_IsString(reasoning))
         reasoning = cJSON_GetObjectItem(delta, "thinking");
     if (cJSON_IsString(reasoning))
-        chunk->reasoning_content = strdup(reasoning->valuestring);
+        chunk->reasoning_content = sdsnew(reasoning->valuestring);
     
     /* Tool calls */
     cJSON *tool_calls = cJSON_GetObjectItem(delta, "tool_calls");

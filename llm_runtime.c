@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <errno.h>
+#include "sds/sds.h"
 #include "llm_runtime.h"
 
 /* ============================================================================
@@ -25,10 +26,10 @@ struct llm_runtime {
     LlmParser *parser;
 
     /* Cached config strings (also stored inside stream_client) */
-    char *api_key;
-    char *model;
-    char *api_endpoint;
-    char *log_file;
+    sds api_key;
+    sds model;
+    sds api_endpoint;
+    sds log_file;
 
     /* Registered tool handlers */
     struct {
@@ -69,11 +70,11 @@ llm_runtime_t *llm_runtime_new(const char *api_key, const char *model,
     llm_runtime_t *rt = calloc(1, sizeof(llm_runtime_t));
     if (!rt) return NULL;
 
-    rt->api_key        = strdup(api_key);
-    rt->model          = strdup(model);
-    rt->api_endpoint   = strdup(api_endpoint ? api_endpoint
+    rt->api_key        = sdsnew(api_key);
+    rt->model          = sdsnew(model);
+    rt->api_endpoint   = sdsnew(api_endpoint ? api_endpoint
                              : "https://api.moonshot.cn/v1/chat/completions");
-    rt->log_file       = log_file ? strdup(log_file) : NULL;
+    rt->log_file       = log_file ? sdsnew(log_file) : NULL;
     rt->running        = 1;
 
     /* Create stream client */
@@ -102,10 +103,10 @@ void llm_runtime_free(llm_runtime_t *rt) {
     if (rt->client) stream_client_free(rt->client);
     if (rt->parser) llm_parser_destroy(rt->parser);
 
-    free(rt->api_key);
-    free(rt->model);
-    free(rt->api_endpoint);
-    free(rt->log_file);
+    sdsfree(rt->api_key);
+    sdsfree(rt->model);
+    sdsfree(rt->api_endpoint);
+    sdsfree(rt->log_file);
     free(rt);
 }
 
@@ -132,10 +133,10 @@ int llm_runtime_set_model(llm_runtime_t *rt, const char *model,
     if (!rt || !model) return -1;
     stream_client_set_model(rt->client, model);
     stream_client_set_api(rt->client, api_key, api_endpoint);
-    free(rt->model);
-    rt->model = strdup(model);
-    if (api_key)     { free(rt->api_key);      rt->api_key      = strdup(api_key); }
-    if (api_endpoint) { free(rt->api_endpoint); rt->api_endpoint = strdup(api_endpoint); }
+    sdsfree(rt->model);
+    rt->model = sdsnew(model);
+    if (api_key)     { sdsfree(rt->api_key);      rt->api_key      = sdsnew(api_key); }
+    if (api_endpoint) { sdsfree(rt->api_endpoint); rt->api_endpoint = sdsnew(api_endpoint); }
     return 0;
 }
 
