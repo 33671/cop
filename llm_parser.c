@@ -120,6 +120,12 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
         cJSON_AddStringToObject(msg, "content", "");
     }
 
+    /* Safety net: ensure content or tool_calls is set (API requirement) */
+    if (!cJSON_GetObjectItem(msg, "content") && !cJSON_GetObjectItem(msg, "tool_calls")) {
+        fprintf(stderr, "[llm_parser] WARNING: finish_assistant — neither content nor tool_calls set, adding empty string\n");
+        cJSON_AddStringToObject(msg, "content", "");
+    }
+
     cJSON_AddItemToArray(p->messages_array, msg);
     p->assistant.msg = NULL;   /* ownership transferred */
     reset_assistant(p);
@@ -352,6 +358,12 @@ LlmParserStatus llm_parser_force_finish(LlmParser *p)
     /* Finalize accumulated reasoning */
     if (p->assistant.reasoning_buf && sdslen(p->assistant.reasoning_buf) > 0) {
         cJSON_AddStringToObject(msg, "reasoning_content", p->assistant.reasoning_buf);
+    }
+
+    /* Safety net: ensure content or tool_calls is set (API requirement) */
+    if (!cJSON_GetObjectItem(msg, "content") && !cJSON_GetObjectItem(msg, "tool_calls")) {
+        fprintf(stderr, "[llm_parser] WARNING: force_finish — neither content nor tool_calls set, adding empty string\n");
+        cJSON_AddStringToObject(msg, "content", "");
     }
 
     /* Discard incomplete tool calls — do NOT add them */
