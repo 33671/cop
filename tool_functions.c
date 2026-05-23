@@ -702,6 +702,7 @@ void tool_functions_add_sleep_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "name", "sleep");
     cJSON_AddStringToObject(func, "description",
         "Sleep for a given number of seconds");
+    cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
@@ -709,6 +710,7 @@ void tool_functions_add_sleep_schema(cJSON *schemas) {
     cJSON_AddStringToObject(secs, "type", "number");
     cJSON_AddStringToObject(secs, "description",
         "Number of seconds to sleep");
+    cJSON_AddFalseToObject(params, "additionalProperties");
     cJSON *required = cJSON_AddArrayToObject(params, "required");
     cJSON_AddItemToArray(required, cJSON_CreateString("secs"));
     cJSON_AddItemToArray(schemas, schema);
@@ -725,12 +727,14 @@ void tool_functions_add_shell_schema(cJSON *schemas) {
         "Avoid commands that run forever or require interactive input. "
         "For long-running commands, use timeout prefixes like 'timeout 30s ...' "
         "to manually control the time limit. When a command requires root privilege, don't run it yourself, ask the user to run it.");
+    cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
     cJSON *cmd = cJSON_AddObjectToObject(props, "cmd");
     cJSON_AddStringToObject(cmd, "type", "string");
     cJSON_AddStringToObject(cmd, "description", "The shell command to execute");
+    cJSON_AddFalseToObject(params, "additionalProperties");
     cJSON *required = cJSON_AddArrayToObject(params, "required");
     cJSON_AddItemToArray(required, cJSON_CreateString("cmd"));
     cJSON_AddItemToArray(schemas, schema);
@@ -747,6 +751,7 @@ void tool_functions_add_read_schema(cJSON *schemas) {
         "Maximum returned size is 100 KB. No approval needed. "
         "Before reading, use shell 'pwd' to confirm the current workspace "
         "directory so you can construct correct relative paths.");
+    cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
@@ -761,8 +766,11 @@ void tool_functions_add_read_schema(cJSON *schemas) {
     cJSON_AddStringToObject(lim, "type", "integer");
     cJSON_AddStringToObject(lim, "description",
         "Maximum number of lines to return (max 1000). Default: 1000");
+    cJSON_AddFalseToObject(params, "additionalProperties");
     cJSON *required = cJSON_AddArrayToObject(params, "required");
     cJSON_AddItemToArray(required, cJSON_CreateString("path"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("offset"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("limit"));
     cJSON_AddItemToArray(schemas, schema);
 }
 
@@ -776,6 +784,7 @@ void tool_functions_add_write_schema(cJSON *schemas) {
         "automatically. If mode is not specified and the file already exists, "
         "returns an error asking for an explicit mode. "
         "Requires user approval before writing.");
+    cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
@@ -795,9 +804,11 @@ void tool_functions_add_write_schema(cJSON *schemas) {
     cJSON_AddItemToArray(enum_arr, cJSON_CreateString("overwrite"));
     cJSON_AddItemToArray(enum_arr, cJSON_CreateString("append"));
     cJSON_AddItemToObject(mode, "enum", enum_arr);
+    cJSON_AddFalseToObject(params, "additionalProperties");
     cJSON *required = cJSON_AddArrayToObject(params, "required");
     cJSON_AddItemToArray(required, cJSON_CreateString("path"));
     cJSON_AddItemToArray(required, cJSON_CreateString("content"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("mode"));
     cJSON_AddItemToArray(schemas, schema);
 }
 
@@ -811,6 +822,7 @@ void tool_functions_add_edit_schema(cJSON *schemas) {
         "of 'old', replaces with 'new'. By default replaces only the first "
         "occurrence; set replace_all=true to replace all. "
         "Shows a diff preview and requires user approval before applying.");
+    cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
     cJSON *props = cJSON_AddObjectToObject(params, "properties");
@@ -828,10 +840,12 @@ void tool_functions_add_edit_schema(cJSON *schemas) {
     cJSON_AddStringToObject(ra, "type", "boolean");
     cJSON_AddStringToObject(ra, "description",
         "If true, replace all occurrences; otherwise replace only the first");
+    cJSON_AddFalseToObject(params, "additionalProperties");
     cJSON *required = cJSON_AddArrayToObject(params, "required");
     cJSON_AddItemToArray(required, cJSON_CreateString("path"));
     cJSON_AddItemToArray(required, cJSON_CreateString("old"));
     cJSON_AddItemToArray(required, cJSON_CreateString("new"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("replace_all"));
     cJSON_AddItemToArray(schemas, schema);
 }
 

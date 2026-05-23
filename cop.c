@@ -133,7 +133,7 @@ int main(int argc, char *argv[]) {
     /* Launch REPL */
     go(cop_ui_repl(rt));
 
-    while (1) msleep(now() + 100);
+    msleep(-1);
 
     /* Not reached */
     llm_runtime_free(rt);
