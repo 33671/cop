@@ -166,30 +166,27 @@ static void on_runtime_event(llm_runtime_t *rt,
         }
         break;
 
-    case LLM_RT_EVENT_USAGE:
-        if (data) {
-            cJSON *p = cJSON_GetObjectItem(data, "prompt_tokens");
-            cJSON *c = cJSON_GetObjectItem(data, "completion_tokens");
-            cJSON *h = cJSON_GetObjectItem(data, "cached_tokens");
-            cJSON *t = cJSON_GetObjectItem(data, "total_tokens");
+    case LLM_RT_EVENT_DONE:
+        if (llm_runtime_usage_seen(rt)) {
+            int p = llm_runtime_usage_prompt(rt);
+            int c = llm_runtime_usage_completion(rt);
+            int h = llm_runtime_usage_cached(rt);
+            int t = llm_runtime_usage_total(rt);
 
             char pi[16], co[16], ca[16], to[16];
             printf("\n\033[90min: %s  out: %s",
-                   fmt_tokens(p && cJSON_IsNumber(p) ? p->valueint : 0, pi, sizeof(pi)),
-                   fmt_tokens(c && cJSON_IsNumber(c) ? c->valueint : 0, co, sizeof(co)));
-            if (h && cJSON_IsNumber(h) && h->valueint > 0) {
+                   fmt_tokens(p, pi, sizeof(pi)),
+                   fmt_tokens(c, co, sizeof(co)));
+            if (h > 0) {
                 printf("  cached: %s",
-                       fmt_tokens(h->valueint, ca, sizeof(ca)));
+                       fmt_tokens(h, ca, sizeof(ca)));
             }
-            if (t && cJSON_IsNumber(t)) {
+            if (t > 0) {
                 printf("  total: %s",
-                       fmt_tokens(t->valueint, to, sizeof(to)));
+                       fmt_tokens(t, to, sizeof(to)));
             }
             printf("\033[0m\n");
         }
-        break;
-
-    case LLM_RT_EVENT_DONE:
         if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
         if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
         break;

@@ -47,6 +47,14 @@ struct llm_runtime {
 
     /* YOLO mode: auto-approve tool calls */
     int yolo;
+
+    /* Usage statistics from the most recent step */
+    int     usage_seen;
+    int     usage_prompt;
+    int     usage_completion;
+    int     usage_total;
+    int     usage_cached;
+    int64_t usage_elapsed_ms;
 };
 
 /* ============================================================================
@@ -414,6 +422,8 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
     int loop_count = 0;
     while (loop_count < LLM_RUNTIME_MAX_TOOL_LOOPS) {
         loop_count++;
+        rt->usage_seen = 0;  /* reset per-iteration usage */
+        int64_t step_start = now();  /* for TPS computation */
 
         /* Check cancellation before starting a new request */
         if (llm_runtime_is_cancelled(rt)) {
@@ -521,28 +531,21 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
                          chunk.content, NULL, user_data);
             }
 
-            /* Track tool calls appearance */
+            /* Track tool calls appearance and collect usage (fire via accessors later) */
             if ((chunk.tool_calls && cJSON_GetArraySize(chunk.tool_calls) > 0) ||
                 (chunk.finish_reason_present &&
                  strcmp(chunk.finish_reason, "tool_calls") == 0)) {
                 saw_tool_calls = 1;
             }
 
-            /* Notify usage if present */
-            if (chunk.usage_present && on_chunk) {
-                cJSON *usage = cJSON_CreateObject();
-                cJSON_AddNumberToObject(usage, "prompt_tokens",
-                                        chunk.prompt_tokens);
-                cJSON_AddNumberToObject(usage, "completion_tokens",
-                                        chunk.completion_tokens);
-                cJSON_AddNumberToObject(usage, "total_tokens",
-                                        chunk.total_tokens);
-                if (chunk.cached_tokens >= 0) {
-                    cJSON_AddNumberToObject(usage, "cached_tokens",
-                                            chunk.cached_tokens);
-                }
-                on_chunk(rt, LLM_RT_EVENT_USAGE, NULL, usage, user_data);
-                cJSON_Delete(usage);
+            /* Collect usage from last chunk; fire after streaming ends. */
+            if (chunk.usage_present) {
+                rt->usage_seen       = 1;
+                rt->usage_prompt     = chunk.prompt_tokens;
+                rt->usage_completion = chunk.completion_tokens;
+                rt->usage_total      = chunk.total_tokens;
+                rt->usage_cached     = chunk.cached_tokens;
+                rt->usage_elapsed_ms = now() - step_start;
             }
 
             stream_chunk_cleanup(&chunk);
@@ -634,6 +637,11 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             return 0;
         }
 
+        /* Fire DONE per-iteration so the UI can print usage for this step */
+        if (on_chunk) {
+            on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
+        }
+
         /* ---- Step 8: loop back to send another request ---- */
     }
 
@@ -692,6 +700,16 @@ void llm_runtime_set_yolo(llm_runtime_t *rt, int yolo) {
 int llm_runtime_is_yolo(const llm_runtime_t *rt) {
     return rt ? rt->yolo : 0;
 }
+
+/* ============================================================================
+ * Usage Statistics Accessors
+ * ============================================================================ */
+int  llm_runtime_usage_seen(const llm_runtime_t *rt)        { return rt ? rt->usage_seen : 0; }
+int  llm_runtime_usage_prompt(const llm_runtime_t *rt)       { return rt ? rt->usage_prompt : 0; }
+int  llm_runtime_usage_completion(const llm_runtime_t *rt)   { return rt ? rt->usage_completion : 0; }
+int  llm_runtime_usage_total(const llm_runtime_t *rt)        { return rt ? rt->usage_total : 0; }
+int  llm_runtime_usage_cached(const llm_runtime_t *rt)       { return rt ? rt->usage_cached : -1; }
+int64_t llm_runtime_usage_elapsed_ms(const llm_runtime_t *rt)  { return rt ? rt->usage_elapsed_ms : 0; }
 
 /* ============================================================================
  * Async Subprocess (coroutine-friendly popen)

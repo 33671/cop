@@ -236,6 +236,16 @@ const char *llm_runtime_get_error(const llm_runtime_t *rt);
 const char *llm_runtime_get_state_string(const llm_runtime_t *rt);
 
 /* ============================================================================
+ * Step Usage Statistics (populated after each llm_runtime_send call)
+ * ============================================================================ */
+int  llm_runtime_usage_seen(const llm_runtime_t *rt);
+int  llm_runtime_usage_prompt(const llm_runtime_t *rt);
+int  llm_runtime_usage_completion(const llm_runtime_t *rt);
+int  llm_runtime_usage_total(const llm_runtime_t *rt);
+int  llm_runtime_usage_cached(const llm_runtime_t *rt);
+int64_t llm_runtime_usage_elapsed_ms(const llm_runtime_t *rt);
+
+/* ============================================================================
  * Async Subprocess (for non-blocking CLI tool execution)
  * ============================================================================ */
 
