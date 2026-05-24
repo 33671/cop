@@ -229,6 +229,7 @@ target_link_libraries(cop
     history_db
     tool_functions
     isocline
+    stream_md_renderer
     llm_runtime
     openai_stream_client_lib
     openai_sse_parser
@@ -262,6 +263,31 @@ target_link_libraries(llm_runtime_test
 # UTF-8 Sanitizer library and tests
 add_library(utils_ut8 STATIC utils_ut8.c)
 target_include_directories(utils_ut8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# md4c Markdown parser (amalgamation)
+add_library(md4c STATIC
+    md4c/md4c.c
+    md4c/entity.c
+)
+target_include_directories(md4c PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/md4c
+)
+target_compile_options(md4c PRIVATE
+    -Wall -Wextra -Wno-unused-parameter -Wno-declaration-after-statement
+)
+
+# Stream Markdown Renderer (incremental MD → ANSI output)
+add_library(stream_md_renderer STATIC stream_md_renderer.c)
+target_link_libraries(stream_md_renderer
+    md4c
+    sds
+    utils_ut8
+)
+target_include_directories(stream_md_renderer PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/md4c
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
+)
 
 add_executable(test_sanitize_utf8 test_sanitize_utf8.c utils_ut8.c)
 target_include_directories(test_sanitize_utf8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

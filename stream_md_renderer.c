@@ -9,6 +9,7 @@
 #include "md4c.h"
 #include "utils_ut8.h"
 #include "sds.h"
+#include "stream_md_renderer.h"
 
 #define ANSI_RESET      "\033[0m"
 #define ANSI_BOLD       "\033[1m"
@@ -916,7 +917,7 @@ static int text_cb(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *us
  * Core: parse markdown into an sds ANSI-output buffer
  * ════════════════════════════════════════════════════════════════ */
 
-static sds render_markdown(const char *input, size_t len, int max_width) {
+sds render_markdown(const char *input, size_t len, int max_width) {
     mdrenderer_ctx c;
     memset(&c, 0, sizeof(c));
     c.bol = 1;
@@ -955,7 +956,7 @@ static sds render_markdown(const char *input, size_t len, int max_width) {
  * wrap_styled_text() so that its visible width ≤ max_width.
  * The result preserves all ANSI codes, with proper reset at each
  * continuation line boundary. This guarantees that \n count == terminal rows. */
-static sds wrap_rendered_to_width(const char *rendered, size_t len, int max_width) {
+sds wrap_rendered_to_width(const char *rendered, size_t len, int max_width) {
     if (max_width < 1 || len == 0)
         return sdsnewlen(rendered, len);
 
@@ -1038,7 +1039,7 @@ typedef struct {
 
 /* Split an sds string into an array of line pointers. Each line
  * does NOT include the \n separator. *nlines receives the count. */
-static sds_line *sds_split_lines(const char *s, size_t slen, int *nlines) {
+sds_line *sds_split_lines(const char *s, size_t slen, int *nlines) {
     if (slen == 0) { *nlines = 0; return NULL; }
     int cap = 16;
     sds_line *lines = xmalloc((size_t)cap * sizeof(sds_line));
@@ -1060,17 +1061,14 @@ static sds_line *sds_split_lines(const char *s, size_t slen, int *nlines) {
     return lines;
 }
 
-static int line_eq(const sds_line *a, const sds_line *b) {
+int line_eq(const sds_line *a, const sds_line *b) {
     return a->len == b->len && memcmp(a->start, b->start, a->len) == 0;
 }
 
 /* Get terminal width from TIOCGWINSZ, or fall back to 80.
  * Tries stdout first, falls back to stdin/stderr. */
-static int get_terminal_width(int force_tty) {
-    if (!force_tty && !isatty(fileno(stdout)))
-        return 0;  /* pipe mode: no width limit by default */
+int md_get_terminal_width(void) {
     struct winsize ws;
-    /* Try stdout, stdin, stderr in order */
     int fds[] = {STDOUT_FILENO, STDIN_FILENO, STDERR_FILENO};
     for (int i = 0; i < 3; i++) {
         if (ioctl(fds[i], TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
@@ -1079,203 +1077,199 @@ static int get_terminal_width(int force_tty) {
     return 80;
 }
 
-static int process_stream(FILE *in, int max_width, int force_tty, int delta_delay_ms) {
-    int tty = force_tty || isatty(fileno(stdout));
-
-    /* Always determine real terminal width for wrapping so each \n
-     * corresponds to exactly one terminal row — no auto-wrapping skew.
-     * In pipe mode (non-TTY), leave term_width at 0 for no wrapping. */
-    int term_width = max_width;
-    if (term_width <= 0 && tty)
-        term_width = get_terminal_width(force_tty);
-    if (term_width > 0 && term_width < MIN_COL_WIDTH)
-        term_width = MIN_COL_WIDTH;
-
-    sds accumulated = sdsempty();   /* raw markdown accumulated so far */
-    sds prev_wrapped = NULL;        /* previous wrapped display output */
-    int prev_lines = 0;             /* \n count of prev_wrapped */
-
-    /* Set stdin to unbuffered so we get data ASAP */
-    setvbuf(in, NULL, _IONBF, 0);
-
-    /* Read character by character — each byte is an independent delta
-     * that triggers a full re-parse + re-render. */
-    int ch;
-    while ((ch = fgetc(in)) != EOF) {
-        /* 1. Accumulate the single character */
-        char c = (char)ch;
-        accumulated = sdscatlen(accumulated, &c, 1);
-
-        /* 2. Re-parse and re-render the *entire* accumulated text from scratch.
-         *    This matches the pi architecture: every delta triggers a full re-parse. */
-        sds rendered = render_markdown(accumulated, sdslen(accumulated), term_width);
-
-        if (!tty) {
-            /* Pipe mode: keep raw rendered output (identical to mdrender) */
-            sdsfree(prev_wrapped);
-            prev_wrapped = rendered;
-            continue;
-        }
-
-        /* ── TTY mode: diff-based re-render (pi TUI strategy) ── */
-
-        /* Wrap each logical line to term_width so every \n = one terminal row. */
-        sds wrapped = wrap_rendered_to_width(rendered, sdslen(rendered), term_width);
-        sdsfree(rendered);
-        size_t wlen = sdslen(wrapped);
-
-        /* Count \n in wrapped output (needed for cursor tracking) */
-        int cur_lines = 0;
-        for (size_t i = 0; i < wlen; i++)
-            if (wrapped[i] == '\n') cur_lines++;
-
-        /* Delay before each update (except the first) */
-        if (delta_delay_ms > 0 && prev_wrapped) {
-            usleep((useconds_t)delta_delay_ms * 1000);
-        }
-
-        if (!prev_wrapped) {
-            /* First chunk: output directly (assumes clean screen) */
-            fwrite(wrapped, 1, wlen, stdout);
-            fflush(stdout);
-            prev_wrapped = wrapped;
-            prev_lines = cur_lines;
-            continue;
-        }
-
-        /* ── Diff-based update (pi TUI strategy) ── */
-        int old_nl, new_nl;
-        sds_line *old_lines = sds_split_lines(prev_wrapped, sdslen(prev_wrapped), &old_nl);
-        sds_line *new_lines = sds_split_lines(wrapped, wlen, &new_nl);
-
-        /* Find the first line that differs */
-        int first_changed = 0;
-        while (first_changed < old_nl && first_changed < new_nl &&
-               line_eq(&old_lines[first_changed], &new_lines[first_changed]))
-            first_changed++;
-
-        int need_update = (first_changed < old_nl || first_changed < new_nl);
-
-        if (need_update) {
-            /* ── Begin synchronized output (CSI 2026) for flicker-free rendering.
-             *     Unsupported terminals silently ignore these private sequences. ── */
-            printf("\033[?2026h");
-
-            int append_only = (first_changed == old_nl && new_nl > old_nl);
-
-            if (append_only) {
-                /* Pure append: cursor is already at end of old content.
-                 * Build appended content as a single buffer. */
-                sds app = sdsempty();
-                for (int i = first_changed; i < new_nl; i++) {
-                    app = sdscatlen(app, "\n", 1);
-                    app = sdscatlen(app, new_lines[i].start, new_lines[i].len);
-                }
-                fwrite(app, 1, sdslen(app), stdout);
-                sdsfree(app);
-            } else {
-                /* Content changed or shrunk: move cursor to first_changed row,
-                 * clear to end, then write all new lines from first_changed.
-                 * Build the replacement as a contiguous buffer so \n characters
-                 * produce the correct row layout (especially for empty lines). */
-                int back = prev_lines - first_changed;
-                if (back > 0) printf("\033[%dA", back);
-                printf("\r\033[J");
-
-                /* Build replacement: new_lines[first_changed..] joined by \n,
-                 * plus trailing \n to account for the one sds_split_lines consumed. */
-                sds repl = sdsempty();
-                for (int i = first_changed; i < new_nl; i++) {
-                    if (i > first_changed) repl = sdscatlen(repl, "\n", 1);
-                    repl = sdscatlen(repl, new_lines[i].start, new_lines[i].len);
-                }
-                if (cur_lines > 0)
-                    repl = sdscatlen(repl, "\n", 1);
-                fwrite(repl, 1, sdslen(repl), stdout);
-                sdsfree(repl);
-
-                /* If new content has fewer lines, clear the extra rows */
-                if (new_nl < old_nl) {
-                    int extra = old_nl - new_nl;
-                    for (int i = 0; i < extra; i++) {
-                        printf("\r\n\033[2K");
-                    }
-                    printf("\033[%dA", extra);
-                }
-            }
-
-            /* ── End synchronized output ── */
-            printf("\033[?2026l");
-        }
-
-        fflush(stdout);
-        free(old_lines);
-        free(new_lines);
-
-        /* Update tracking */
-        sdsfree(prev_wrapped);
-        prev_wrapped = wrapped;
-        prev_lines = cur_lines;
-    }
-
-    /* ── EOF ── */
-    if (!tty && prev_wrapped) {
-        /* Pipe mode: output the final wrapped render */
-        fwrite(prev_wrapped, 1, sdslen(prev_wrapped), stdout);
-    }
-    sdsfree(prev_wrapped);
-    sdsfree(accumulated);
-    return 0;
-}
-
 /* ════════════════════════════════════════════════════════════════
- * Main
+ * Incremental renderer API
  * ════════════════════════════════════════════════════════════════ */
 
-int main(int argc, char **argv) {
-    FILE *in = stdin;
-    int max_width = 0, force_tty = 0, delta_delay_ms = 0;
-    const char *fname = NULL;
-    int show_help = 0;
+struct md_renderer {
+    sds raw;        /* accumulated raw markdown */
+    int max_width;  /* rendering width (0 = unlimited) */
+};
 
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
-            max_width = atoi(argv[++i]);
-            if (max_width < 20) max_width = 20;
-        } else if (strcmp(argv[i], "-d") == 0 && i + 1 < argc) {
-            delta_delay_ms = atoi(argv[++i]);
-        } else if (strcmp(argv[i], "-f") == 0 ||
-                   strcmp(argv[i], "--force") == 0) {
-            force_tty = 1;
-        } else if (strcmp(argv[i], "-h") == 0 ||
-                   strcmp(argv[i], "--help") == 0) {
-            show_help = 1;
-        } else if (argv[i][0] != '-') {
-            fname = argv[i];
+md_renderer_t *md_renderer_new(int max_width) {
+    md_renderer_t *r = xmalloc(sizeof(*r));
+    r->raw = sdsempty();
+    r->max_width = max_width;
+    return r;
+}
+
+void md_renderer_free(md_renderer_t *r) {
+    if (!r) return;
+    sdsfree(r->raw);
+    free(r);
+}
+
+void md_renderer_reset(md_renderer_t *r) {
+    if (!r) return;
+    sdsclear(r->raw);
+}
+
+sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
+    if (!r || !text || len <= 0) return sdsempty();
+    r->raw = sdscatlen(r->raw, text, (size_t)len);
+
+    /* Determine effective width */
+    int w = r->max_width;
+    if (w <= 0 && isatty(fileno(stdout)))
+        w = md_get_terminal_width();
+    if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
+
+    /* Parse and render */
+    sds rendered = render_markdown(r->raw, sdslen(r->raw), w);
+
+    /* Wrap to terminal width so \n count == row count */
+    if (w > 0) {
+        sds wrapped = wrap_rendered_to_width(rendered, sdslen(rendered), w);
+        sdsfree(rendered);
+        return wrapped;
+    }
+    return rendered;
+}
+
+sds md_renderer_output(md_renderer_t *r) {
+    if (!r) return NULL;
+    int w = r->max_width;
+    if (w <= 0 && isatty(fileno(stdout)))
+        w = md_get_terminal_width();
+    if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
+    sds rendered = render_markdown(r->raw, sdslen(r->raw), w);
+    if (w > 0) {
+        sds wrapped = wrap_rendered_to_width(rendered, sdslen(rendered), w);
+        sdsfree(rendered);
+        return wrapped;
+    }
+    return rendered;
+}
+
+sds md_renderer_raw(md_renderer_t *r) {
+    return r ? r->raw : NULL;
+}
+
+/* ── Diff helpers ─────────────────────────────────────────── */
+
+int md_count_lines(const char *s) {
+    if (!s) return 0;
+    int n = 0;
+    for (const char *p = s; *p; p++)
+        if (*p == '\n') n++;
+    return n;
+}
+
+int md_compute_diff(const char *old_text, int old_len,
+                    const char *new_text, int new_len) {
+    int old_nl, new_nl;
+    sds_line *old_lines = sds_split_lines(old_text, (size_t)old_len, &old_nl);
+    sds_line *new_lines = sds_split_lines(new_text, (size_t)new_len, &new_nl);
+
+    int first_changed = 0;
+    while (first_changed < old_nl && first_changed < new_nl &&
+           line_eq(&old_lines[first_changed], &new_lines[first_changed]))
+        first_changed++;
+
+    if (first_changed >= old_nl && first_changed >= new_nl)
+        first_changed = -1;  /* identical */
+
+    free(old_lines);
+    free(new_lines);
+    return first_changed;
+}
+
+void md_print_diff(const char *old_text, int old_lines,
+                   const char *new_text, int new_lines,
+                   int first_changed) {
+    if (first_changed < 0) return;  /* no change */
+
+    int old_nl, new_nl;
+    sds_line *old_l = sds_split_lines(old_text,
+                                       old_text ? strlen(old_text) : 0, &old_nl);
+    sds_line *new_l = sds_split_lines(new_text,
+                                       new_text ? strlen(new_text) : 0, &new_nl);
+
+    /* ── Begin synchronized output (CSI 2026) ── */
+    printf("\033[?2026h");
+
+    int append_only = (first_changed == old_nl && new_nl > old_nl);
+
+    if (append_only) {
+        sds app = sdsempty();
+        for (int i = first_changed; i < new_nl; i++) {
+            app = sdscatlen(app, "\n", 1);
+            app = sdscatlen(app, new_l[i].start, new_l[i].len);
+        }
+        fwrite(app, 1, sdslen(app), stdout);
+        sdsfree(app);
+    } else {
+        int back = old_lines - first_changed;
+        if (back > 0) printf("\033[%dA", back);
+        printf("\r\033[J");
+
+        sds repl = sdsempty();
+        for (int i = first_changed; i < new_nl; i++) {
+            if (i > first_changed) repl = sdscatlen(repl, "\n", 1);
+            repl = sdscatlen(repl, new_l[i].start, new_l[i].len);
+        }
+        if (new_lines > 0)
+            repl = sdscatlen(repl, "\n", 1);
+        fwrite(repl, 1, sdslen(repl), stdout);
+        sdsfree(repl);
+
+        if (new_nl < old_nl) {
+            int extra = old_nl - new_nl;
+            for (int i = 0; i < extra; i++)
+                printf("\r\n\033[2K");
+            printf("\033[%dA", extra);
         }
     }
 
-    if (show_help) {
-        printf("Usage: stream_md_renderer [-w WIDTH] [-d DELAY_MS] [-f] [file.md]\n");
-        printf("  Stream markdown input (stdin) and render with ANSI formatting.\n");
-        printf("  In TTY mode, re-renders in-place on every input chunk.\n");
-        printf("  In pipe mode, outputs final rendered result at EOF.\n");
-        printf("  -w WIDTH       max rendering width (default: unlimited)\n");
-        printf("  -d DELAY_MS    delay (ms) between delta updates (default: 0)\n");
-        printf("  -f, --force    force TTY mode even without a terminal\n");
-        printf("  -h             show this help\n");
-        return 0;
-    }
+    printf("\033[?2026l");
+    fflush(stdout);
 
-    if (fname) {
-        in = fopen(fname, "rb");
-        if (!in) {
-            fprintf(stderr, "error: cannot open '%s'\n", fname);
-            return 1;
+    free(old_l);
+    free(new_l);
+}
+
+/* ── High-level display helper ────────────────────────────── */
+
+void md_display_init(md_display_t *d, int max_width) {
+    memset(d, 0, sizeof(*d));
+    d->r = md_renderer_new(max_width);
+}
+
+void md_display_free(md_display_t *d) {
+    if (!d) return;
+    md_renderer_free(d->r);
+    if (d->prev) sdsfree(d->prev);
+    memset(d, 0, sizeof(*d));
+}
+
+void md_display_reset(md_display_t *d) {
+    if (!d) return;
+    md_renderer_reset(d->r);
+    if (d->prev) { sdsfree(d->prev); d->prev = NULL; }
+    d->prev_lines = 0;
+}
+
+void md_display_feed(md_display_t *d, const char *text, int len) {
+    if (!d || !text || len <= 0) return;
+
+    sds cur = md_renderer_feed(d->r, text, len);
+    int cur_lines = md_count_lines(cur);
+
+    if (!d->prev) {
+        /* First chunk: output directly */
+        fwrite(cur, 1, sdslen(cur), stdout);
+        fflush(stdout);
+        d->prev = cur;
+        d->prev_lines = cur_lines;
+    } else {
+        /* Diff-based in-place update */
+        int first = md_compute_diff(d->prev, (int)sdslen(d->prev),
+                                     cur, (int)sdslen(cur));
+        if (first >= 0) {
+            md_print_diff(d->prev, d->prev_lines, cur, cur_lines, first);
         }
+        sdsfree(d->prev);
+        d->prev = cur;
+        d->prev_lines = cur_lines;
     }
-
-    int ret = process_stream(in, max_width, force_tty, delta_delay_ms);
-    if (in != stdin) fclose(in);
-    return ret;
 }

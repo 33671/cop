@@ -8,6 +8,7 @@
 #include "tool_functions.h"
 #include "isocline/include/isocline.h"
 #include "cjson/cJSON.h"
+#include "stream_md_renderer.h"
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -87,6 +88,8 @@ static void completer_wrapper(ic_completion_env_t *cenv, const char *prefix) {
 
 static int  cb_in_reasoning  = 0;
 static int  cb_in_responding = 0;
+static md_display_t g_content_display;  /* markdown renderer for content */
+static int g_content_display_inited = 0;
 
 static const char *fmt_tokens(int n, char *buf, size_t bufsz) {
     if (n >= 1000) {
@@ -120,9 +123,15 @@ static void on_runtime_event(llm_runtime_t *rt,
         if (!cb_in_responding) {
             if (cb_in_reasoning) { printf("\n"); cb_in_reasoning = 0; }
             cb_in_responding = 1;
+            /* Start a fresh markdown renderer for this response */
+            if (!g_content_display_inited) {
+                md_display_init(&g_content_display, md_get_terminal_width());
+                g_content_display_inited = 1;
+            } else {
+                md_display_reset(&g_content_display);
+            }
         }
-        printf("\033[1;34m%s\033[0m", text);
-        fflush(stdout);
+        md_display_feed(&g_content_display, text, (int)strlen(text));
         break;
 
     case LLM_RT_EVENT_STATUS_CHANGE:
@@ -221,6 +230,9 @@ static void on_runtime_event(llm_runtime_t *rt,
         break;
 
     case LLM_RT_EVENT_DONE:
+        /* Reset markdown renderer for next turn */
+        if (g_content_display_inited)
+            md_display_reset(&g_content_display);
         /* Print usage stats directly from rt */
         if (llm_runtime_usage_seen(rt)) {
             int p = llm_runtime_usage_prompt(rt);
@@ -266,6 +278,8 @@ static void on_runtime_event(llm_runtime_t *rt,
     case LLM_RT_EVENT_ERROR:
         cb_in_reasoning  = 0;
         cb_in_responding = 0;
+        if (g_content_display_inited)
+            md_display_reset(&g_content_display);
         printf("\n\033[1;31mError: %s\033[0m\n", text ? text : "unknown");
         break;
     }
