@@ -440,18 +440,46 @@ static void tbl_calc_colw(mdrenderer_ctx *c, int ncols, int *colw) {
     if (total <= c->max_width) return;
 
     int avail = c->max_width - borders;
-    for (int i = 0; i < ncols; i++) colw[i] = MIN_COL_WIDTH;
-    int remain = avail - ncols * MIN_COL_WIDTH;
 
-    while (remain > 0) {
-        int best = -1, best_gap = -1;
+    /* Proportional shrink: each column gets share of avail scaled by orig_colw.
+     * This avoids the greedy-largest-gap bug where short columns get starved. */
+    for (int i = 0; i < ncols; i++) {
+        colw[i] = orig_colw[i] * avail / total_orig;
+        if (colw[i] < MIN_COL_WIDTH) colw[i] = MIN_COL_WIDTH;
+    }
+
+    /* Fix rounding / min-enforcement discrepancies */
+    int sum = 0;
+    for (int i = 0; i < ncols; i++) sum += colw[i];
+    int diff = avail - sum;
+
+    while (diff > 0) {
+        /* Give extra pixel to column with largest proportional shortfall */
+        int best = -1;
+        double best_need = -1.0;
         for (int i = 0; i < ncols; i++) {
-            int gap = orig_colw[i] - colw[i];
-            if (gap > best_gap) { best_gap = gap; best = i; }
+            if (colw[i] < orig_colw[i]) {
+                double need = (double)(orig_colw[i] - colw[i]) / orig_colw[i];
+                if (need > best_need) { best_need = need; best = i; }
+            }
         }
-        if (best < 0 || best_gap <= 0) break;
+        if (best < 0) break;
         colw[best]++;
-        remain--;
+        diff--;
+    }
+
+    while (diff < 0) {
+        /* Over-allocation (too many MIN_COL_WIDTH floors): shrink largest */
+        int best = -1, biggest = 0;
+        for (int i = 0; i < ncols; i++) {
+            if (colw[i] > MIN_COL_WIDTH && colw[i] > biggest) {
+                biggest = colw[i];
+                best = i;
+            }
+        }
+        if (best < 0) break;
+        colw[best]--;
+        diff++;
     }
 }
 
