@@ -211,7 +211,7 @@ target_link_libraries(tool_functions
     isocline
     llm_runtime
     cjson
-    sanitize_utf8
+    utils_ut8
 )
 target_include_directories(tool_functions PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -260,10 +260,10 @@ target_link_libraries(llm_runtime_test
 )
 
 # UTF-8 Sanitizer library and tests
-add_library(sanitize_utf8 STATIC sanitize_utf8.c)
-target_include_directories(sanitize_utf8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(utils_ut8 STATIC utils_ut8.c)
+target_include_directories(utils_ut8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable(test_sanitize_utf8 test_sanitize_utf8.c sanitize_utf8.c)
+add_executable(test_sanitize_utf8 test_sanitize_utf8.c utils_ut8.c)
 target_include_directories(test_sanitize_utf8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_sanitize_utf8 PRIVATE -Wall -Wextra)
 

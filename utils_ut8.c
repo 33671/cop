@@ -1,7 +1,7 @@
 #include <stdint.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-
 void sanitize_utf8(uint8_t *data, size_t len) {
     if (!data) return;
     size_t i = 0;
@@ -84,4 +84,65 @@ void sanitize_utf8(uint8_t *data, size_t len) {
 
         i++; // 非法序列已替换首字节，前进一个字节
     }
+}
+
+int utf8_char_width(const char *s, int *bytes) {
+    unsigned char c = (unsigned char)s[0];
+    uint32_t codepoint;
+    int len;
+
+    // 解析 UTF-8 首字节
+    if ((c & 0x80) == 0) { len = 1; codepoint = c; }
+    else if ((c & 0xE0) == 0xC0) { len = 2; codepoint = c & 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { len = 3; codepoint = c & 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { len = 4; codepoint = c & 0x07; }
+    else { *bytes = 1; return 0; }  // 非法字节
+
+    for (int i = 1; i < len; ++i) {
+        codepoint = (codepoint << 6) | ((unsigned char)s[i] & 0x3F);
+    }
+    *bytes = len;
+
+    // 零宽字符
+    if (codepoint == 0x200B || codepoint == 0x200C || codepoint == 0x200D ||
+        codepoint == 0xFEFF) return 0;
+    // 组合符号（粗略范围）
+    if (codepoint >= 0x0300 && codepoint <= 0x036F) return 0;
+    if (codepoint >= 0x1AB0 && codepoint <= 0x1AFF) return 0;
+    if (codepoint >= 0x20D0 && codepoint <= 0x20FF) return 0;
+    if (codepoint >= 0xFE00 && codepoint <= 0xFE0F) return 0; // 异体选择符
+
+    // 控制字符
+    if (codepoint < 0x20) return 0;
+
+    // 全角字符范围（East Asian Wide / Fullwidth）
+    if ((codepoint >= 0x1100 && codepoint <= 0x115F) ||  // 韩文
+        (codepoint >= 0x2E80 && codepoint <= 0xA4CF) ||  // CJK 及其它
+        (codepoint >= 0xAC00 && codepoint <= 0xD7A3) ||  // 韩文音节
+        (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||  // CJK 兼容
+        (codepoint >= 0xFE10 && codepoint <= 0xFE19) ||
+        (codepoint >= 0xFE30 && codepoint <= 0xFE6F) ||
+        (codepoint >= 0xFF01 && codepoint <= 0xFF60) ||
+        (codepoint >= 0xFFE0 && codepoint <= 0xFFE6) ||
+        (codepoint >= 0x1F300 && codepoint <= 0x1F64F) || // 杂项符号（很多 emoji 可视为宽 2）
+        (codepoint >= 0x1F680 && codepoint <= 0x1F6FF) ||
+        (codepoint >= 0x2600  && codepoint <= 0x26FF)  ||
+        (codepoint >= 0x2700  && codepoint <= 0x27BF)  ||
+        (codepoint >= 0x1F900 && codepoint <= 0x1F9FF) ||
+        (codepoint >= 0x1FA00 && codepoint <= 0x1FA6F) ||
+        (codepoint >= 0x1FA70 && codepoint <= 0x1FAFF))
+        return 2;
+
+    return 1;  // 其余半角
+}
+
+int utf8_string_width(const char *s) {
+    int total = 0;
+    while (*s) {
+        int bytes;
+        int w = utf8_char_width(s, &bytes);
+        if (w > 0) total += w;
+        s += bytes;
+    }
+    return total;
 }

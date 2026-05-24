@@ -15,7 +15,7 @@
 #include <errno.h>
 #include "sds/sds.h"
 #include "isocline/include/isocline.h"
-#include "sanitize_utf8.h"
+#include "utils_ut8.h"
 
 /* ============================================================================
  * Constants
