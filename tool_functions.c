@@ -18,6 +18,22 @@
 #include "utils_ut8.h"
 
 /* ============================================================================
+ * Shared static arena for all tool functions (avoids malloc/free churn)
+ * ============================================================================ */
+
+#define TOOL_ARENA_MAX_BYTES (256 * 1024)  /* free arena if it grows past 256 KB */
+
+static Arena tool_arena = {0};
+
+static void tool_arena_cleanup(void) {
+    if (arena_total_bytes(&tool_arena) > TOOL_ARENA_MAX_BYTES) {
+        arena_free(&tool_arena);
+    } else {
+        arena_reset(&tool_arena);
+    }
+}
+
+/* ============================================================================
  * Constants
  * ============================================================================ */
 
@@ -100,25 +116,24 @@ static int check_approval(llm_runtime_t *rt, cJSON *result,
  * Shared Helpers — path handling
  * ============================================================================ */
 
-/* Expand leading ~ to $HOME. Caller sdsfrees the result. */
-static sds expand_tilde(const char *path) {
-    if (!path || path[0] != '~') return sdsnew(path);
+/* Expand leading ~ to $HOME. Result lives in the given arena. */
+static sds expand_tilde(Arena *a, const char *path) {
+    if (!path || path[0] != '~') return sdsnew(a, path);
     const char *home = getenv("HOME");
     if (!home) home = "/tmp";
-    return sdscatprintf(sdsempty(), "%s%s", home, path + 1);
+    return sdscatprintf(sdsempty(a), "%s%s", home, path + 1);
 }
 
 /* Resolve path to absolute: ~ expansion, realpath, CWD fallback.
- * Caller sdsfrees the result. */
-static sds resolve_abs_path(const char *path) {
-    sds expanded = expand_tilde(path);
+ * Result lives in the given arena. */
+static sds resolve_abs_path(Arena *a, const char *path) {
+    sds expanded = expand_tilde(a, path);
     char *resolved = realpath(expanded, NULL);
-    if (resolved) { sdsfree(expanded); return sdsnew(resolved); }
+    if (resolved) { return sdsnew(a, resolved); }
     if (expanded[0] == '/') return expanded;
     char cwd[4096];
     if (!getcwd(cwd, sizeof(cwd))) return expanded;
-    sds abs = sdscatprintf(sdsempty(), "%s/%s", cwd, expanded);
-    sdsfree(expanded);
+    sds abs = sdscatprintf(sdsempty(a), "%s/%s", cwd, expanded);
     return abs;
 }
 
@@ -296,21 +311,22 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
     sanitize_truncate_output(&output, OUTPUT_MAX_LINE, OUTPUT_MAX_TOTAL);
 
     /* Build text field */
+    
     sds text_buf;
     if (ret != 0) {
         const char *reason = llm_runtime_is_cancelled(rt)
                              ? "cancelled" : "timed out";
-        text_buf = sdscatprintf(sdsempty(),
+        text_buf = sdscatprintf(sdsempty(&tool_arena),
                  "Output:\n%s\nExit_code:%d\n"
                  "[WARNING: command %s partial output above]",
                  output ? output : "(no output)", exit_code, reason);
     } else {
-        text_buf = sdscatprintf(sdsempty(), "Output:\n%s\nExit_code:%d",
+        text_buf = sdscatprintf(sdsempty(&tool_arena), "Output:\n%s\nExit_code:%d",
                  output ? output : "(no output)", exit_code);
     }
     cJSON_AddStringToObject(result, "text", text_buf);
-    sdsfree(text_buf);
     free(output);
+    tool_arena_cleanup();
     return result;
 }
 
@@ -337,11 +353,11 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args) {
 
     printf("\n  [tool] reading: %s (offset=%d, limit=%d)\n", path, offset, limit);
 
-    sds abs_path = resolve_abs_path(path);
+    
+    sds abs_path = resolve_abs_path(&tool_arena, path);
     size_t nread = 0;
     char *buf = read_file_at(abs_path, TOOL_READ_MAX_BYTES, &nread, result);
-    sdsfree(abs_path);
-    if (!buf) return result;
+    if (!buf) { tool_arena_cleanup(); return result; }
 
     sanitize_utf8((uint8_t *)buf, nread);
 
@@ -360,7 +376,7 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args) {
     if (out_cap < 8192) out_cap = 8192;
     char  *out = malloc(out_cap);
     if (!out) { free(buf); cJSON_AddStringToObject(result, "text",
-        "error: memory allocation failed"); return result; }
+        "error: memory allocation failed"); tool_arena_cleanup(); return result; }
 
     size_t collected    = 0;
     size_t line_start   = 0;
@@ -387,7 +403,7 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args) {
             char *tmp = realloc(out, out_cap);
             if (!tmp) { free(out); free(buf);
                 cJSON_AddStringToObject(result, "text",
-                    "error: memory allocation failed"); return result; }
+                    "error: memory allocation failed"); tool_arena_cleanup(); return result; }
             out = tmp;
         }
 
@@ -407,6 +423,7 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args) {
     cJSON_AddStringToObject(result, "text", out);
     free(out);
     free(buf);
+    tool_arena_cleanup();
     return result;
 }
 
@@ -416,6 +433,7 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args) {
 
 cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
     (void)rt;
+    
     cJSON *result = new_text_result(NULL);
 
     const char *path = get_path_arg(args, result);
@@ -427,17 +445,17 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
     const char *mode    = (m && cJSON_IsString(m)) ? m->valuestring : NULL;
 
     if (!content) {
-        sds abs = resolve_abs_path(path);
+        sds abs = resolve_abs_path(&tool_arena, path);
         char eb[512];
         snprintf(eb, sizeof(eb),
             "Error writing to file '%s' (resolved from '%s'): "
             "missing 'content' argument", abs, path);
-        sdsfree(abs);
         cJSON_AddStringToObject(result, "text", eb);
+        tool_arena_cleanup();
         return result;
     }
 
-    sds  abs_path    = resolve_abs_path(path);
+    sds  abs_path    = resolve_abs_path(&tool_arena, path);
     size_t content_len = strlen(content);
 
     /* Mode logic */
@@ -445,24 +463,22 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
         FILE *check = fopen(abs_path, "rb");
         if (check) {
             fclose(check);
-            sds eb = sdscatprintf(sdsempty(),
+            sds eb = sdscatprintf(sdsempty(&tool_arena),
                 "Error: File already exists: %s. "
                 "Use mode='overwrite' to overwrite, or mode='append' to append.",
                 abs_path);
-            sdsfree(abs_path);
             cJSON_AddStringToObject(result, "text", eb);
-            sdsfree(eb);
+            tool_arena_cleanup();
             return result;
         }
         mode = "overwrite";
     }
     if (strcmp(mode, "overwrite") != 0 && strcmp(mode, "append") != 0) {
-        sds eb = sdscatprintf(sdsempty(),
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
             "Error: Invalid mode '%s'. Must be 'overwrite', 'append', or None.",
             mode);
-        sdsfree(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
 
@@ -479,19 +495,18 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
     if (!check_approval(rt, result,
             "[yellow][b]Apply this file operation? y/N[/] ",
             "user denied file write"))
-        { sdsfree(abs_path); return result; }
+        { tool_arena_cleanup(); return result; }
 
     mkdir_p(abs_path);
 
     const char *fmode = (strcmp(mode, "append") == 0) ? "ab" : "wb";
     FILE *f = fopen(abs_path, fmode);
     if (!f) {
-        sds eb = sdscatprintf(sdsempty(),
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
             "Error writing to file '%s' (resolved from '%s'): %s",
             abs_path, path, strerror(errno));
-        sdsfree(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
     size_t wrote = fwrite(content, 1, content_len, f);
@@ -499,20 +514,19 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
 
     sds sum;
     if (wrote != content_len) {
-        sum = sdscatprintf(sdsempty(),
+        sum = sdscatprintf(sdsempty(&tool_arena),
             "Error: wrote %zu/%zu bytes to %s (disk full?)",
             wrote, content_len, abs_path);
     } else if (strcmp(mode, "append") == 0) {
-        sum = sdscatprintf(sdsempty(),
+        sum = sdscatprintf(sdsempty(&tool_arena),
             "Successfully appended to %s", abs_path);
     } else {
-        sum = sdscatprintf(sdsempty(),
+        sum = sdscatprintf(sdsempty(&tool_arena),
             "Successfully wrote to %s", abs_path);
     }
     printf("  [tool] %s\n", sum);
-    sdsfree(abs_path);
     cJSON_AddStringToObject(result, "text", sum);
-    sdsfree(sum);
+    tool_arena_cleanup();
     return result;
 }
 
@@ -544,33 +558,32 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
         return result;
     }
 
-    sds abs_path = resolve_abs_path(path);
+    
+    sds abs_path = resolve_abs_path(&tool_arena, path);
 
     /* File existence & type */
     struct stat st;
     if (stat(abs_path, &st) != 0) {
-        sds eb = sdscatprintf(sdsempty(),
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
                  "Error: File not found: %s (resolved from '%s')",
                  abs_path, path);
-        sdsfree(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
     if (!S_ISREG(st.st_mode)) {
-        sds eb = sdscatprintf(sdsempty(),
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
                  "Error: Path is not a file: %s (resolved from '%s')",
                  abs_path, path);
-        sdsfree(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
 
     /* Read file */
     size_t nread = 0;
     char *buf = read_file_at(abs_path, TOOL_READ_MAX_BYTES, &nread, result);
-    if (!buf) { sdsfree(abs_path); return result; }
+    if (!buf) { tool_arena_cleanup(); return result; }
 
     size_t old_len = strlen(old_str);
     size_t new_len = strlen(new_str);
@@ -578,21 +591,22 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
 
     if (!first_match) {
         free(buf);
-        sds eb = sdscatprintf(sdsempty(),
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
                  "No occurrences found to replace in %s", abs_path);
-        sdsfree(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
 
     /* Perform replacement using sds */
-    sds   new_content = sdsempty();
+    sds   new_content = sdsempty(&tool_arena);
     size_t new_size    = 0;
 
+    int replacements = 0;
     if (replace_all) {
         char *src = buf, *match;
         while ((match = strstr(src, old_str))) {
+            replacements++;
             size_t before = (size_t)(match - src);
             new_content = sdscatlen(new_content, src, before);
             new_content = sdscatlen(new_content, new_str, new_len);
@@ -602,6 +616,7 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
         new_content = sdscatlen(new_content, src, rem);
         new_size = sdslen(new_content);
     } else {
+        replacements = 1;
         size_t before_len = (size_t)(first_match - buf);
         size_t after_len  = nread - before_len - old_len;
         new_content = sdscatlen(new_content, buf, before_len);
@@ -611,12 +626,11 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     }
 
     if (new_size == nread && memcmp(new_content, buf, nread) == 0) {
-        sdsfree(new_content); free(buf);
-        sds eb = sdscatprintf(sdsempty(),
+        free(buf);
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
                  "No occurrences found to replace in %s", abs_path);
-        sdsfree(abs_path);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
 
@@ -651,43 +665,37 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     if (!check_approval(rt, result,
             "[yellow][b]Apply this edit? y/N[/] ",
             "user denied file edit"))
-        { sdsfree(new_content); free(buf); free(diff_out); sdsfree(abs_path); return result; }
+        { free(buf); free(diff_out); tool_arena_cleanup(); return result; }
 
     /* Write to file */
     FILE *out_f = fopen(abs_path, "wb");
     if (!out_f) {
-        sds eb = sdscatprintf(sdsempty(),
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
             "Error processing file '%s' (resolved from '%s'): %s",
             abs_path, path, strerror(errno));
-        sdsfree(new_content); free(buf); free(diff_out); sdsfree(abs_path);
+        free(buf); free(diff_out);
         cJSON_AddStringToObject(result, "text", eb);
-        sdsfree(eb);
+        tool_arena_cleanup();
         return result;
     }
     size_t wrote = fwrite(new_content, 1, new_size, out_f);
     fclose(out_f);
 
-    /* Build result: short summary + diff */
     sds result_text;
     if (wrote != new_size) {
-        result_text = sdscatprintf(sdsempty(),
+        result_text = sdscatprintf(sdsempty(&tool_arena),
             "Error: wrote %zu/%zu bytes to %s (disk full?)",
             wrote, new_size, abs_path);
     } else {
-        result_text = sdscatprintf(sdsempty(),
-            "Edit applied to %s (%zu bytes)",
-            abs_path, new_size);
+        result_text = sdscatprintf(sdsempty(&tool_arena),
+            " Successfully replaced %d block(s) in %s.",
+            replacements, abs_path);
     }
-    printf("  [tool] %s", result_text);
-
-    /* Append diff to result text */
-    if (diff_out) {
-        result_text = sdscatprintf(result_text, "\n%s", diff_out);
-    }
+    printf("  [tool] %s\n", result_text);
     cJSON_AddStringToObject(result, "text", result_text);
-    sdsfree(result_text);
 
-    sdsfree(new_content); free(buf); free(diff_out); sdsfree(abs_path);
+    free(buf); free(diff_out);
+    tool_arena_cleanup();
     return result;
 }
 

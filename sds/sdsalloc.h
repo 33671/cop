@@ -35,8 +35,14 @@
  * This file is used in order to change the SDS allocator at compile time.
  * Just define the following defines to what you want to use. Also add
  * the include of your alternate allocator if needed (not needed in order
- * to use the default libc allocator). */
+ * to use the default libc allocator).
+ *
+ * SDS uses Arena* pointers embedded in each string's header. All allocation
+ * goes through the arena API directly inside sds.c. */
 
-#define s_malloc malloc
-#define s_realloc realloc
-#define s_free free
+#include <stdlib.h> /* for malloc/free used by temporary buffers */
+/* s_malloc / s_realloc / s_free are no-ops — all SDS allocations go
+ * through the arena API. They exist only for API compatibility. */
+#define s_malloc(sz)  ((void)(sz), NULL)
+#define s_realloc(p,sz) ((void)(p), (void)(sz), NULL)
+#define s_free(p)     ((void)(p))

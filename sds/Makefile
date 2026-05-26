@@ -1,8 +1,20 @@
-all: sds-test
+CC      := gcc
+CFLAGS  := -Wall -Wextra -std=c99
 
-sds-test: sds.c sds.h testhelp.h sdsalloc.h
-	$(CC) -o sds-test sds.c -Wall -std=c99 -pedantic -O2 -DSDS_TEST_MAIN
-	@echo ">>> Type ./sds-test to run the sds.c unit tests."
+.PHONY: all test clean
 
-clean: 
-	rm -f sds-test
+all: test
+
+# ── Run tests ──────────────────────────────────────────
+test: build/arena-sds-test
+	@echo "=== SDS tests ==="
+	@./build/arena-sds-test
+	@echo ""
+
+build/arena-sds-test: test_arena_sds.c sds.c sds.h arena.h
+	@mkdir -p build
+	$(CC) $(CFLAGS) -o $@ test_arena_sds.c sds.c
+
+# ── Clean ──────────────────────────────────────────────
+clean:
+	rm -rf build

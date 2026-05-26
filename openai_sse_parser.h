@@ -59,6 +59,9 @@ typedef struct {
     /* Special markers */
     int is_done;             /* 1 if this is [DONE] marker */
     int is_valid;            /* 1 if this chunk contains valid data */
+
+    /* Arena for all sds strings in this chunk */
+    Arena arena;
 } StreamChunk;
 
 /* ============================================================================

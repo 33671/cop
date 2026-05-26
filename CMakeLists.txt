@@ -220,7 +220,7 @@ target_include_directories(tool_functions PUBLIC
 )
 
 # cop — main agent executable
-add_executable(cop cop.c cop_ui.c)
+add_executable(cop cop.c cop_ui.c cjson_arena.c)
 target_compile_options(cop PRIVATE
     -fno-stack-clash-protection
 )

@@ -42,33 +42,45 @@ extern const char *SDS_NOINIT;
 
 typedef char *sds;
 
+#include "arena.h"
+
 /* Note: sdshdr5 is never used, we just access the flags byte directly.
- * However is here to document the layout of type 5 SDS strings. */
+ * However is here to document the layout of type 5 SDS strings.
+ *
+ * Layout invariant: `flags` is always the byte immediately before `buf[]`,
+ * so `s[-1]` reliably accesses the flags byte regardless of header type.
+ * A `void *_arena` field is stored before `flags` so each string knows
+ * which arena it belongs to. */
 struct __attribute__ ((__packed__)) sdshdr5 {
+    void *_arena;
     unsigned char flags; /* 3 lsb of type, and 5 msb of string length */
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr8 {
     uint8_t len; /* used */
     uint8_t alloc; /* excluding the header and null terminator */
+    void *_arena;
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr16 {
     uint16_t len; /* used */
     uint16_t alloc; /* excluding the header and null terminator */
+    void *_arena;
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr32 {
     uint32_t len; /* used */
     uint32_t alloc; /* excluding the header and null terminator */
+    void *_arena;
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
 struct __attribute__ ((__packed__)) sdshdr64 {
     uint64_t len; /* used */
     uint64_t alloc; /* excluding the header and null terminator */
+    void *_arena;
     unsigned char flags; /* 3 lsb of type, 5 unused bits */
     char buf[];
 };
@@ -215,11 +227,11 @@ static inline void sdssetalloc(sds s, size_t newlen) {
     }
 }
 
-sds sdsnewlen(const void *init, size_t initlen);
-sds sdsnew(const char *init);
-sds sdsempty(void);
+sds sdsnewlen(Arena *a, const void *init, size_t initlen);
+sds sdsnew(Arena *a, const char *init);
+sds sdsempty(Arena *a);
 sds sdsdup(const sds s);
-void sdsfree(sds s);
+sds sdsdupTo(Arena *dst, const sds s);
 sds sdsgrowzero(sds s, size_t len);
 sds sdscatlen(sds s, const void *t, size_t len);
 sds sdscat(sds s, const char *t);
@@ -241,16 +253,16 @@ void sdsrange(sds s, ssize_t start, ssize_t end);
 void sdsupdatelen(sds s);
 void sdsclear(sds s);
 int sdscmp(const sds s1, const sds s2);
-sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *count);
+sds *sdssplitlen(Arena *a, const char *s, ssize_t len, const char *sep, int seplen, int *count);
 void sdsfreesplitres(sds *tokens, int count);
 void sdstolower(sds s);
 void sdstoupper(sds s);
-sds sdsfromlonglong(long long value);
+sds sdsfromlonglong(Arena *a, long long value);
 sds sdscatrepr(sds s, const char *p, size_t len);
-sds *sdssplitargs(const char *line, int *argc);
+sds *sdssplitargs(Arena *a, const char *line, int *argc);
 sds sdsmapchars(sds s, const char *from, const char *to, size_t setlen);
-sds sdsjoin(char **argv, int argc, char *sep);
-sds sdsjoinsds(sds *argv, int argc, const char *sep, size_t seplen);
+sds sdsjoin(Arena *a, char **argv, int argc, char *sep);
+sds sdsjoinsds(Arena *a, sds *argv, int argc, const char *sep, size_t seplen);
 
 /* Low level functions exposed to the user API */
 sds sdsMakeRoomFor(sds s, size_t addlen);
@@ -258,14 +270,6 @@ void sdsIncrLen(sds s, ssize_t incr);
 sds sdsRemoveFreeSpace(sds s);
 size_t sdsAllocSize(sds s);
 void *sdsAllocPtr(sds s);
-
-/* Export the allocator used by SDS to the program using SDS.
- * Sometimes the program SDS is linked to, may use a different set of
- * allocators, but may want to allocate or free things that SDS will
- * respectively free or allocate. */
-void *sds_malloc(size_t size);
-void *sds_realloc(void *ptr, size_t size);
-void sds_free(void *ptr);
 
 #ifdef REDIS_TEST
 int sdsTest(int argc, char *argv[]);

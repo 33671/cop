@@ -43,27 +43,6 @@
 
 
 
-/* ── safe allocation (for non-sds heap objects) ──────────────── */
-
-static void *xmalloc(size_t size) {
-    void *p = sds_malloc(size);
-    if (!p) { fprintf(stderr, "malloc(%zu) failed\n", size); exit(1); }
-    return p;
-}
-
-static void *xrealloc(void *ptr, size_t size) {
-    void *p = sds_realloc(ptr, size);
-    if (!p) { fprintf(stderr, "realloc(%zu) failed\n", size); exit(1); }
-    return p;
-}
-
-static char *xstrdup(const char *s) {
-    size_t len = strlen(s);
-    char *p = xmalloc(len + 1);
-    memcpy(p, s, len + 1);
-    return p;
-}
-
 /* ── list tracking ───────────────────────────────────────────── */
 
 typedef struct {
@@ -79,13 +58,14 @@ typedef struct {
     sds    styled;    /* full styled cell content (sds string) */
     unsigned col;
     int    is_header;
-    char **wrapped;   /* wrapped visual lines (malloc'd array of strings) */
+    char **wrapped;   /* wrapped visual lines (arena-allocated) */
     int    nwrapped;  /* number of wrapped lines */
 } TCell;
 
 /* ── render context ──────────────────────────────────────────── */
 
 typedef struct {
+    Arena *arena;       /* arena for all sds allocations */
     sds out;            /* output buffer (sds string) */
     int bol;
 
@@ -243,7 +223,7 @@ static size_t extract_leading_ansi(const char *styled, size_t len,
     return si;
 }
 
-static char **wrap_styled_text(const char *styled, int max_w, int *nlines) {
+static char **wrap_styled_text(Arena *a, const char *styled, int max_w, int *nlines) {
     if (!styled) styled = "";
     if (max_w < MIN_COL_WIDTH) max_w = MIN_COL_WIDTH;
 
@@ -322,7 +302,7 @@ static char **wrap_styled_text(const char *styled, int max_w, int *nlines) {
 
         /* build line: prefix + content + ANSI_RESET */
         size_t content_len = line_end - line_start;
-        char *line = xmalloc(plen + content_len + 5);
+        char *line = (char *)arena_alloc(a, plen + content_len + 5);
         if (plen > 0) memcpy(line, prefix, plen);
         if (content_len > 0)
             memcpy(line + plen, styled + line_start, content_len);
@@ -330,8 +310,10 @@ static char **wrap_styled_text(const char *styled, int max_w, int *nlines) {
         line[plen + content_len + 4] = '\0';
 
         if (*nlines >= line_cap) {
+            size_t old_cap_bytes = (size_t)line_cap * sizeof(char *);
             line_cap = line_cap ? line_cap * 2 : 8;
-            lines = xrealloc(lines, (size_t)line_cap * sizeof(char *));
+            lines = (char **)arena_realloc(a, lines, old_cap_bytes,
+                                            (size_t)line_cap * sizeof(char *));
         }
         lines[*nlines] = line;
         (*nlines)++;
@@ -340,8 +322,8 @@ static char **wrap_styled_text(const char *styled, int max_w, int *nlines) {
     }
 
     if (*nlines == 0) {
-        lines = xmalloc(sizeof(char *));
-        lines[0] = xstrdup("");
+        lines = (char **)arena_alloc(a, sizeof(char *));
+        lines[0] = arena_strdup(a, "");
         *nlines = 1;
     }
     return lines;
@@ -487,7 +469,7 @@ static void tbl_wrap_cells(mdrenderer_ctx *c, int ncols, const int *colw) {
     (void)ncols;
     for (int i = 0; i < c->tbl_ncell; i++) {
         TCell *cell = &c->tbl_cells[i];
-        cell->wrapped = wrap_styled_text(cell->styled,
+        cell->wrapped = wrap_styled_text(c->arena, cell->styled,
                                          colw[cell->col],
                                          &cell->nwrapped);
     }
@@ -596,15 +578,9 @@ static void tbl_render(mdrenderer_ctx *c, int ncols, const int *colw,
 
 static void tbl_free_cells(mdrenderer_ctx *c) {
     for (int i = 0; i < c->tbl_ncell; i++) {
-        sdsfree(c->tbl_cells[i].styled);
         c->tbl_cells[i].styled = NULL;
-        if (c->tbl_cells[i].wrapped) {
-            for (int j = 0; j < c->tbl_cells[i].nwrapped; j++)
-                free(c->tbl_cells[i].wrapped[j]);
-            free(c->tbl_cells[i].wrapped);
-            c->tbl_cells[i].wrapped = NULL;
-            c->tbl_cells[i].nwrapped = 0;
-        }
+        c->tbl_cells[i].wrapped = NULL;
+        c->tbl_cells[i].nwrapped = 0;
     }
     c->tbl_ncell = 0;
     c->tbl_nrow = 0;
@@ -736,7 +712,7 @@ static int enter_block_cb(MD_BLOCKTYPE type, void *detail, void *userdata) {
         c->tbl_in_cell = 1;
 
         /* capture cell output into a parallel buffer; c->out stays as main output */
-        c->tbl_cell_out = sdsempty();
+        c->tbl_cell_out = sdsempty(c->arena);
 
         c->tbl_cells[c->tbl_ncell].col = c->tbl_col;
         c->tbl_cells[c->tbl_ncell].is_header = (type == MD_BLOCK_TH);
@@ -945,12 +921,13 @@ static int text_cb(MD_TEXTTYPE type, const MD_CHAR *text, MD_SIZE size, void *us
  * Core: parse markdown into an sds ANSI-output buffer
  * ════════════════════════════════════════════════════════════════ */
 
-sds render_markdown(const char *input, size_t len, int max_width) {
+sds render_markdown(Arena *a, const char *input, size_t len, int max_width) {
     mdrenderer_ctx c;
     memset(&c, 0, sizeof(c));
+    c.arena = a;
     c.bol = 1;
     c.max_width = max_width;
-    c.out = sdsempty();
+    c.out = sdsempty(a);
 
     MD_PARSER parser;
     memset(&parser, 0, sizeof(parser));
@@ -984,11 +961,11 @@ sds render_markdown(const char *input, size_t len, int max_width) {
  * wrap_styled_text() so that its visible width ≤ max_width.
  * The result preserves all ANSI codes, with proper reset at each
  * continuation line boundary. This guarantees that \n count == terminal rows. */
-sds wrap_rendered_to_width(const char *rendered, size_t len, int max_width) {
+sds wrap_rendered_to_width(Arena *a, const char *rendered, size_t len, int max_width) {
     if (max_width < 1 || len == 0)
-        return sdsnewlen(rendered, len);
+        return sdsnewlen(a, rendered, len);
 
-    sds result = sdsempty();
+    sds result = sdsempty(a);
     /* Track ANSI state carried across \n boundaries.
      * E.g. code blocks: \033[92m is emitted once before the block,
      * and all subsequent lines must inherit the green.*/
@@ -1005,21 +982,19 @@ sds wrap_rendered_to_width(const char *rendered, size_t len, int max_width) {
         if (seg_len > 0) {
             /* Build segment: carried ANSI state + original content */
             size_t total = (size_t)carry_len + seg_len;
-            char *seg = xmalloc(total + 1);
+            char *seg = (char *)arena_alloc(a, total + 1);
             if (carry_len > 0)
                 memcpy(seg, carry_ansi, (size_t)carry_len);
             memcpy(seg + carry_len, rendered + line_start, seg_len);
             seg[total] = '\0';
 
             int nw;
-            char **wrapped = wrap_styled_text(seg, max_width, &nw);
+            char **wrapped = wrap_styled_text(a, seg, max_width, &nw);
             for (int j = 0; j < nw; j++) {
                 if (!first_line) result = sdscatlen(result, "\n", 1);
                 result = sdscat(result, wrapped[j]);
-                free(wrapped[j]);
                 first_line = 0;
             }
-            free(wrapped);
 
             /* Update carried ANSI state from this segment:
              * scan for non-reset codes to carry forward;
@@ -1043,8 +1018,6 @@ sds wrap_rendered_to_width(const char *rendered, size_t len, int max_width) {
                     si++;
                 }
             }
-
-            free(seg);
         } else {
             /* empty logical line: preserve as-is */
             if (!first_line) result = sdscatlen(result, "\n", 1);
@@ -1067,18 +1040,19 @@ typedef struct {
 
 /* Split an sds string into an array of line pointers. Each line
  * does NOT include the \n separator. *nlines receives the count. */
-sds_line *sds_split_lines(const char *s, size_t slen, int *nlines) {
+sds_line *sds_split_lines(Arena *a, const char *s, size_t slen, int *nlines) {
     if (slen == 0) { *nlines = 0; return NULL; }
     int cap = 16;
-    sds_line *lines = xmalloc((size_t)cap * sizeof(sds_line));
+    sds_line *lines = (sds_line *)arena_alloc(a, (size_t)cap * sizeof(sds_line));
     *nlines = 0;
     size_t pos = 0;
     while (pos < slen) {
         const char *nl = memchr(s + pos, '\n', slen - pos);
         size_t seg = nl ? (size_t)(nl - (s + pos)) : slen - pos;
         if (*nlines >= cap) {
+            size_t old = (size_t)cap * sizeof(sds_line);
             cap *= 2;
-            lines = xrealloc(lines, (size_t)cap * sizeof(sds_line));
+            lines = (sds_line *)arena_realloc(a, lines, old, (size_t)cap * sizeof(sds_line));
         }
         lines[*nlines].start = s + pos;
         lines[*nlines].len = seg;
@@ -1110,30 +1084,33 @@ int md_get_terminal_width(void) {
  * ════════════════════════════════════════════════════════════════ */
 
 struct md_renderer {
+    Arena arena;    /* arena for raw + rendered output */
     sds raw;        /* accumulated raw markdown */
     int max_width;  /* rendering width (0 = unlimited) */
 };
 
 md_renderer_t *md_renderer_new(int max_width) {
-    md_renderer_t *r = xmalloc(sizeof(*r));
-    r->raw = sdsempty();
+    md_renderer_t *r = malloc(sizeof(*r));
+    memset(r, 0, sizeof(*r));
+    r->raw = sdsempty(&r->arena);
     r->max_width = max_width;
     return r;
 }
 
 void md_renderer_free(md_renderer_t *r) {
     if (!r) return;
-    sdsfree(r->raw);
+    arena_free(&r->arena);
     free(r);
 }
 
 void md_renderer_reset(md_renderer_t *r) {
     if (!r) return;
-    sdsclear(r->raw);
+    arena_reset(&r->arena);
+    r->raw = sdsempty(&r->arena);
 }
 
 sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
-    if (!r || !text || len <= 0) return sdsempty();
+    if (!r || !text || len <= 0) return sdsempty(&r->arena);
     r->raw = sdscatlen(r->raw, text, (size_t)len);
 
     /* Determine effective width */
@@ -1143,12 +1120,11 @@ sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
 
     /* Parse and render */
-    sds rendered = render_markdown(r->raw, sdslen(r->raw), w);
+    sds rendered = render_markdown(&r->arena, r->raw, sdslen(r->raw), w);
 
     /* Wrap to terminal width so \n count == row count */
     if (w > 0) {
-        sds wrapped = wrap_rendered_to_width(rendered, sdslen(rendered), w);
-        sdsfree(rendered);
+        sds wrapped = wrap_rendered_to_width(&r->arena, rendered, sdslen(rendered), w);
         return wrapped;
     }
     return rendered;
@@ -1160,10 +1136,9 @@ sds md_renderer_output(md_renderer_t *r) {
     if (w <= 0 && isatty(fileno(stdout)))
         w = md_get_terminal_width();
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
-    sds rendered = render_markdown(r->raw, sdslen(r->raw), w);
+    sds rendered = render_markdown(&r->arena, r->raw, sdslen(r->raw), w);
     if (w > 0) {
-        sds wrapped = wrap_rendered_to_width(rendered, sdslen(rendered), w);
-        sdsfree(rendered);
+        sds wrapped = wrap_rendered_to_width(&r->arena, rendered, sdslen(rendered), w);
         return wrapped;
     }
     return rendered;
@@ -1185,9 +1160,10 @@ int md_count_lines(const char *s) {
 
 int md_compute_diff(const char *old_text, int old_len,
                     const char *new_text, int new_len) {
+    Arena da = {0};
     int old_nl, new_nl;
-    sds_line *old_lines = sds_split_lines(old_text, (size_t)old_len, &old_nl);
-    sds_line *new_lines = sds_split_lines(new_text, (size_t)new_len, &new_nl);
+    sds_line *old_lines = sds_split_lines(&da, old_text, (size_t)old_len, &old_nl);
+    sds_line *new_lines = sds_split_lines(&da, new_text, (size_t)new_len, &new_nl);
 
     int first_changed = 0;
     while (first_changed < old_nl && first_changed < new_nl &&
@@ -1197,8 +1173,7 @@ int md_compute_diff(const char *old_text, int old_len,
     if (first_changed >= old_nl && first_changed >= new_nl)
         first_changed = -1;  /* identical */
 
-    free(old_lines);
-    free(new_lines);
+    arena_free(&da);
     return first_changed;
 }
 
@@ -1207,10 +1182,12 @@ void md_print_diff(const char *old_text, int old_lines,
                    int first_changed) {
     if (first_changed < 0) return;  /* no change */
 
+    Arena da = {0};
+
     int old_nl, new_nl;
-    sds_line *old_l = sds_split_lines(old_text,
+    sds_line *old_l = sds_split_lines(&da, old_text,
                                        old_text ? strlen(old_text) : 0, &old_nl);
-    sds_line *new_l = sds_split_lines(new_text,
+    sds_line *new_l = sds_split_lines(&da, new_text,
                                        new_text ? strlen(new_text) : 0, &new_nl);
 
     /* ── Begin synchronized output (CSI 2026) ── */
@@ -1219,19 +1196,18 @@ void md_print_diff(const char *old_text, int old_lines,
     int append_only = (first_changed == old_nl && new_nl > old_nl);
 
     if (append_only) {
-        sds app = sdsempty();
+        sds app = sdsempty(&da);
         for (int i = first_changed; i < new_nl; i++) {
             app = sdscatlen(app, "\n", 1);
             app = sdscatlen(app, new_l[i].start, new_l[i].len);
         }
         fwrite(app, 1, sdslen(app), stdout);
-        sdsfree(app);
     } else {
         int back = old_lines - first_changed;
         if (back > 0) printf("\033[%dA", back);
         printf("\r\033[J");
 
-        sds repl = sdsempty();
+        sds repl = sdsempty(&da);
         for (int i = first_changed; i < new_nl; i++) {
             if (i > first_changed) repl = sdscatlen(repl, "\n", 1);
             repl = sdscatlen(repl, new_l[i].start, new_l[i].len);
@@ -1239,7 +1215,6 @@ void md_print_diff(const char *old_text, int old_lines,
         if (new_lines > 0)
             repl = sdscatlen(repl, "\n", 1);
         fwrite(repl, 1, sdslen(repl), stdout);
-        sdsfree(repl);
 
         if (new_nl < old_nl) {
             int extra = old_nl - new_nl;
@@ -1252,8 +1227,7 @@ void md_print_diff(const char *old_text, int old_lines,
     printf("\033[?2026l");
     fflush(stdout);
 
-    free(old_l);
-    free(new_l);
+    arena_free(&da);
 }
 
 /* ── High-level display helper ────────────────────────────── */
@@ -1266,14 +1240,13 @@ void md_display_init(md_display_t *d, int max_width) {
 void md_display_free(md_display_t *d) {
     if (!d) return;
     md_renderer_free(d->r);
-    if (d->prev) sdsfree(d->prev);
     memset(d, 0, sizeof(*d));
 }
 
 void md_display_reset(md_display_t *d) {
     if (!d) return;
     md_renderer_reset(d->r);
-    if (d->prev) { sdsfree(d->prev); d->prev = NULL; }
+    d->prev = NULL;
     d->prev_lines = 0;
 }
 
@@ -1296,7 +1269,6 @@ void md_display_feed(md_display_t *d, const char *text, int len) {
         if (first >= 0) {
             md_print_diff(d->prev, d->prev_lines, cur, cur_lines, first);
         }
-        sdsfree(d->prev);
         d->prev = cur;
         d->prev_lines = cur_lines;
     }

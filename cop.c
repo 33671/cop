@@ -13,6 +13,8 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+
+void cjson_arena_init(void);
 #include <curl/curl.h>
 
 #include "llm_runtime.h"
@@ -36,6 +38,8 @@ model_entry_t   **g_models = NULL;
  * Main
  * ============================================================================ */
 int main(int argc, char *argv[]) {
+    cjson_arena_init();
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = cop_ui_sigint;

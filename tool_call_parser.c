@@ -6,9 +6,9 @@
 #include "tool_call_parser.h"
 
 /* 内部辅助：向 slot 追加 arguments 字符串片段 */
-static int append_arguments(ToolCallSlot *slot, const char *frag) {
+static int append_arguments(Arena *a, ToolCallSlot *slot, const char *frag) {
     if (!frag || !*frag) return 0;
-    sds cur = slot->arguments ? slot->arguments : sdsempty();
+    sds cur = slot->arguments ? slot->arguments : sdsempty(a);
     sds new_args = sdscat(cur, frag);
     if (!new_args) return -1;
     slot->arguments = new_args;
@@ -16,27 +16,22 @@ static int append_arguments(ToolCallSlot *slot, const char *frag) {
 }
 
 /* 初始化 slot */
-static void init_slot(ToolCallSlot *slot, const char *id, const char *name) {
+static void init_slot(Arena *a, ToolCallSlot *slot, const char *id, const char *name) {
     slot->active = 1;
-    sdsfree(slot->id);
-    sdsfree(slot->name);
-    slot->id = id ? sdsnew(id) : sdsempty();
-    slot->name = name ? sdsnew(name) : sdsempty();
-    sdsfree(slot->arguments);
-    slot->arguments = sdsempty();
+    slot->id = id ? sdsnew(a, id) : sdsempty(a);
+    slot->name = name ? sdsnew(a, name) : sdsempty(a);
+    slot->arguments = sdsempty(a);
 }
 
 /* 清理一个 slot */
 static void free_slot(ToolCallSlot *slot) {
-    sdsfree(slot->id);
-    sdsfree(slot->name);
-    sdsfree(slot->arguments);
     slot->id = slot->name = slot->arguments = NULL;
     slot->active = 0;
 }
 
-void toolcall_parser_init(ToolCallDeltaParser *parser) {
+void toolcall_parser_init(ToolCallDeltaParser *parser, Arena *a) {
     memset(parser, 0, sizeof(*parser));
+    parser->arena = a;
 }
 
 void toolcall_parser_free(ToolCallDeltaParser *parser) {
@@ -93,7 +88,7 @@ static int process_toolcall_chunk(ToolCallDeltaParser *parser, const cJSON *tc_a
                     name = name_item->valuestring;
                 }
             }
-            init_slot(slot, id_item->valuestring, name);
+            init_slot(parser->arena, slot, id_item->valuestring, name);
             parser->any_active = 1;
         }
 
@@ -105,14 +100,13 @@ static int process_toolcall_chunk(ToolCallDeltaParser *parser, const cJSON *tc_a
             /* 更新 name (如果此时才出现) */
             cJSON *name_item = cJSON_GetObjectItem(func, "name");
             if (cJSON_IsString(name_item) && (!slot->name || sdslen(slot->name) == 0)) {
-                sdsfree(slot->name);
-                slot->name = sdsnew(name_item->valuestring);
+                slot->name = sdsnew(parser->arena, name_item->valuestring);
             }
 
             /* 拼接 arguments 片段 */
             cJSON *args_item = cJSON_GetObjectItem(func, "arguments");
             if (cJSON_IsString(args_item)) {
-                if (append_arguments(slot, args_item->valuestring) != 0) {
+                if (append_arguments(parser->arena, slot, args_item->valuestring) != 0) {
                     return -1; /* OOM */
                 }
             }
@@ -204,8 +198,9 @@ int feed_toolcall_delta(ToolCallDeltaParser *parser,
 
 void toolcall_parser_reset(ToolCallDeltaParser *p)
 {
+    Arena *a = p->arena;
     toolcall_parser_free(p);
-    toolcall_parser_init(p);
+    toolcall_parser_init(p, a);
 }
 
 /*

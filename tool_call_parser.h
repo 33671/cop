@@ -27,13 +27,14 @@ typedef struct {
 
 /* 解析器的完整上下文 */
 typedef struct {
+    Arena *arena;                       /* borrowed arena for all sds strings */
     ToolCallSlot slots[MAX_TOOL_CALLS]; /* 按 index 索引 */
     int any_active;                     /* 是否有任何激活的 slot */
     int finished;                       /* 是否已经完成过一次输出，防止重复使用 */
 } ToolCallDeltaParser;
 
-/* 初始化解析器 (使用前调用一次) */
-void toolcall_parser_init(ToolCallDeltaParser *parser);
+/* 初始化解析器 (使用前调用一次)。a 为用于 sds 分配的 arena */
+void toolcall_parser_init(ToolCallDeltaParser *parser, Arena *a);
 
 /*
  * 喂入一个 chunk，尝试产出完整的工具调用数组。

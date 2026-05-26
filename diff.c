@@ -221,7 +221,7 @@ static void fetch(fp_pos_t *ft, const long *ix, int a, int b,
     int i, j, col;
     for (i = a; i <= b; i++) {
         seek_ft(ft, ix[i - 1]);
-        fputc(ch, out);
+        fprintf(out, "%c%d: ", ch, i);
         for (j = 0, col = 0; j < ix[i] - ix[i - 1]; j++) {
             int c = fgetc(ft->fp);
             if (c == EOF) {
@@ -401,10 +401,6 @@ static int diff_output(fp_pos_t ft[2], int nlen[2], long *ix[2],
         }
         if (idx < 0)
             goto cont;
-
-        /* hunk header */
-        if (!anychange)
-            fprintf(out, "--- old\n+++ new\n");
 
         fprintf(out, "@@");
         for (int j = 0; j < 2; j++) {

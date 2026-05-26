@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <assert.h>
 #include "sds/sds.h"
+#include "sds/arena.h"
 #include "cjson/cJSON.h"
 #include "llm_parser.h"
 #include "openai_sse_parser.h"
@@ -23,6 +24,7 @@ struct LlmParser {
     cJSON *history;            /* {"messages": [...]} */
     cJSON *messages_array;
     ToolCallDeltaParser tool_call_parser;
+    Arena arena;
 
     /* Temporary assistant build area */
     struct {
@@ -55,11 +57,11 @@ static void set_error(LlmParser *p, const char *fmt, ...)
     p->state = STATE_ERROR;
 }
 
-/* Append src to dst using sds. */
+/* Append src to dst using sds. Both strings must belong to the same arena. */
 static sds str_append(sds dst, const char *src)
 {
     if (!src || !*src) return dst;
-    if (!dst) dst = sdsempty();
+    if (!dst) return NULL;
     sds new_dst = sdscat(dst, src);
     if (!new_dst) return NULL;
     return new_dst;
@@ -71,11 +73,8 @@ static void reset_assistant(LlmParser *p)
         cJSON_Delete(p->assistant.msg);
         p->assistant.msg = NULL;
     }
-    sdsfree(p->assistant.content_buf);
-    p->assistant.content_buf = NULL;
-
-    sdsfree(p->assistant.reasoning_buf);
-    p->assistant.reasoning_buf = NULL;
+    sdsclear(p->assistant.content_buf);
+    sdsclear(p->assistant.reasoning_buf);
     // reset tool call parser
     toolcall_parser_reset(&p->tool_call_parser);
 
@@ -148,7 +147,9 @@ LlmParser *llm_parser_create(void)
     cJSON_AddItemToObject(p->history, "messages", p->messages_array);
     p->last_usage.cached_tokens = -1;
     p->assistant.last_status = LLM_PARSER_IDLE;
-    toolcall_parser_init(&p->tool_call_parser);
+    p->assistant.content_buf = sdsempty(&p->arena);
+    p->assistant.reasoning_buf = sdsempty(&p->arena);
+    toolcall_parser_init(&p->tool_call_parser, &p->arena);
     return p;
 }
 
@@ -158,6 +159,7 @@ void llm_parser_destroy(LlmParser *p)
     reset_assistant(p);
     toolcall_parser_free(&p->tool_call_parser);
     cJSON_Delete(p->history);
+    arena_free(&p->arena);
     free(p);
 }
 
@@ -324,6 +326,9 @@ void llm_parser_reset(LlmParser *p)
     memset(&p->last_usage, 0, sizeof(p->last_usage));
     p->last_usage.cached_tokens = -1;
     p->error_msg[0] = '\0';
+    arena_reset(&p->arena);
+    p->assistant.content_buf = sdsempty(&p->arena);
+    p->assistant.reasoning_buf = sdsempty(&p->arena);
 }
 
 const char *llm_parser_get_error(const LlmParser *p)

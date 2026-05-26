@@ -39,6 +39,27 @@
 #include "sds.h"
 #include "sdsalloc.h"
 
+#define ARENA_IMPLEMENTATION
+#include "arena.h"
+
+/* sdsfree is a no-op in arena mode — the allocator cannot free
+ * individual strings.  Kept as a macro so internal cleanup paths
+ * compile away to nothing. */
+#define sdsfree(s) ((void)(s))
+
+/* Internal helper: extract Arena* from the sds header's _arena field. */
+static inline Arena *sdsGetArena(const sds s) {
+    unsigned char flags = s[-1];
+    switch(flags & SDS_TYPE_MASK) {
+        case SDS_TYPE_5:  return (Arena *)SDS_HDR(5,s)->_arena;
+        case SDS_TYPE_8:  return (Arena *)SDS_HDR(8,s)->_arena;
+        case SDS_TYPE_16: return (Arena *)SDS_HDR(16,s)->_arena;
+        case SDS_TYPE_32: return (Arena *)SDS_HDR(32,s)->_arena;
+        case SDS_TYPE_64: return (Arena *)SDS_HDR(64,s)->_arena;
+    }
+    return NULL;
+}
+
 const char *SDS_NOINIT = "SDS_NOINIT";
 
 static inline int sdsHdrSize(char type) {
@@ -86,7 +107,7 @@ static inline char sdsReqType(size_t string_size) {
  * You can print the string with printf() as there is an implicit \0 at the
  * end of the string. However the string is binary safe and can contain
  * \0 characters in the middle, as the length is stored in the sds header. */
-sds sdsnewlen(const void *init, size_t initlen) {
+sds sdsnewlen(Arena *a, const void *init, size_t initlen) {
     void *sh;
     sds s;
     char type = sdsReqType(initlen);
@@ -96,7 +117,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
     int hdrlen = sdsHdrSize(type);
     unsigned char *fp; /* flags pointer. */
 
-    sh = s_malloc(hdrlen+initlen+1);
+    sh = arena_alloc(a, hdrlen+initlen+1);
     if (sh == NULL) return NULL;
     if (init==SDS_NOINIT)
         init = NULL;
@@ -107,6 +128,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
     switch(type) {
         case SDS_TYPE_5: {
             *fp = type | (initlen << SDS_TYPE_BITS);
+            ((struct sdshdr5 *)sh)->_arena = (void*)a;
             break;
         }
         case SDS_TYPE_8: {
@@ -114,6 +136,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
             sh->len = initlen;
             sh->alloc = initlen;
             *fp = type;
+            sh->_arena = (void*)a;
             break;
         }
         case SDS_TYPE_16: {
@@ -121,6 +144,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
             sh->len = initlen;
             sh->alloc = initlen;
             *fp = type;
+            sh->_arena = (void*)a;
             break;
         }
         case SDS_TYPE_32: {
@@ -128,6 +152,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
             sh->len = initlen;
             sh->alloc = initlen;
             *fp = type;
+            sh->_arena = (void*)a;
             break;
         }
         case SDS_TYPE_64: {
@@ -135,6 +160,7 @@ sds sdsnewlen(const void *init, size_t initlen) {
             sh->len = initlen;
             sh->alloc = initlen;
             *fp = type;
+            sh->_arena = (void*)a;
             break;
         }
     }
@@ -146,27 +172,43 @@ sds sdsnewlen(const void *init, size_t initlen) {
 
 /* Create an empty (zero length) sds string. Even in this case the string
  * always has an implicit null term. */
-sds sdsempty(void) {
-    return sdsnewlen("",0);
+sds sdsempty(Arena *a) {
+    return sdsnewlen(a, "",0);
 }
 
 /* Create a new sds string starting from a null terminated C string. */
-sds sdsnew(const char *init) {
+sds sdsnew(Arena *a, const char *init) {
     size_t initlen = (init == NULL) ? 0 : strlen(init);
-    return sdsnewlen(init, initlen);
+    return sdsnewlen(a, init, initlen);
 }
 
-/* Duplicate an sds string. */
+/* Duplicate an sds string. In arena mode, duplicates into the same arena. */
 sds sdsdup(const sds s) {
-    return sdsnewlen(s, sdslen(s));
+    return sdsnewlen(sdsGetArena(s), s, sdslen(s));
 }
 
-/* Free an sds string. No operation is performed if 's' is NULL. */
-void sdsfree(sds s) {
-    if (s == NULL) return;
-    s_free((char*)s-sdsHdrSize(s[-1]));
+/* Duplicate an sds string into a specific arena (cross-arena copy). */
+sds sdsdupTo(Arena *dst, const sds s) {
+    return sdsnewlen(dst, s, sdslen(s));
 }
 
+/* Free an sds string. No operation is performed if 's' is NULL.
+ *
+ * In arena mode this is a no-op because:
+ *
+ *   1. Arena is a bump allocator — it cannot free individual allocations
+ *      out of order. Memory is laid out contiguously in 8KB Regions, and
+ *      freeing one sds would leave a hole the allocator can't reuse.
+ *
+ *   2. Multiple sds strings share the same Region. Calling free_region()
+ *      here would invalidate every other sds in that Region.
+ *
+ *   3. Arena's intended pattern is batch-reclaim: allocate many short-lived
+ *      strings during a request/parse/pass, then arena_reset() or
+ *      arena_free() once when the entire workload is done.
+ *
+ * In short: the unit of reclamation with arena is the Arena itself, not
+ * individual strings. Use arena_reset() or arena_free() to reclaim. */
 /* Set the sds string length to the length as obtained with strlen(), so
  * considering as content only up to the first null term character.
  *
@@ -228,20 +270,30 @@ sds sdsMakeRoomFor(sds s, size_t addlen) {
 
     hdrlen = sdsHdrSize(type);
     assert(hdrlen + newlen + 1 > reqlen); /* Catch size_t overflow */
-    if (oldtype==type) {
-        newsh = s_realloc(sh, hdrlen+newlen+1);
-        if (newsh == NULL) return NULL;
-        s = (char*)newsh+hdrlen;
-    } else {
-        /* Since the header size changes, need to move the string forward,
-         * and can't use realloc */
-        newsh = s_malloc(hdrlen+newlen+1);
-        if (newsh == NULL) return NULL;
-        memcpy((char*)newsh+hdrlen, s, len+1);
-        s_free(sh);
-        s = (char*)newsh+hdrlen;
-        s[-1] = type;
-        sdssetlen(s, len);
+    {
+        Arena *a = sdsGetArena(s);
+        if (oldtype==type) {
+            size_t old_size = sdsHdrSize(oldtype) + sdsalloc(s) + 1;
+            newsh = arena_realloc(a, sh, old_size, hdrlen+newlen+1);
+            if (newsh == NULL) return NULL;
+            s = (char*)newsh+hdrlen;
+        } else {
+            newsh = arena_alloc(a, hdrlen+newlen+1);
+            if (newsh == NULL) return NULL;
+            memcpy((char*)newsh+hdrlen, s, len+1);
+            /* old sh is abandoned (arena doesn't free individually) */
+            s = (char*)newsh+hdrlen;
+            s[-1] = type;
+            sdssetlen(s, len);
+            /* Set arena pointer in new header (correct struct type) */
+            switch(type & SDS_TYPE_MASK) {
+                case SDS_TYPE_5:  ((struct sdshdr5 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_8:  ((struct sdshdr8 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_16: ((struct sdshdr16 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_32: ((struct sdshdr32 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_64: ((struct sdshdr64 *)newsh)->_arena = (void*)a; break;
+            }
+        }
     }
     sdssetalloc(s, newlen);
     return s;
@@ -273,18 +325,29 @@ sds sdsRemoveFreeSpace(sds s) {
      * required, we just realloc(), letting the allocator to do the copy
      * only if really needed. Otherwise if the change is huge, we manually
      * reallocate the string to use the different header type. */
-    if (oldtype==type || type > SDS_TYPE_8) {
-        newsh = s_realloc(sh, oldhdrlen+len+1);
-        if (newsh == NULL) return NULL;
-        s = (char*)newsh+oldhdrlen;
-    } else {
-        newsh = s_malloc(hdrlen+len+1);
-        if (newsh == NULL) return NULL;
-        memcpy((char*)newsh+hdrlen, s, len+1);
-        s_free(sh);
-        s = (char*)newsh+hdrlen;
-        s[-1] = type;
-        sdssetlen(s, len);
+    {
+        Arena *a = sdsGetArena(s);
+        if (oldtype==type || type > SDS_TYPE_8) {
+            size_t old_size = oldhdrlen + sdsalloc(s) + 1;
+            newsh = arena_realloc(a, sh, old_size, oldhdrlen+len+1);
+            if (newsh == NULL) return NULL;
+            s = (char*)newsh+oldhdrlen;
+        } else {
+            newsh = arena_alloc(a, hdrlen+len+1);
+            if (newsh == NULL) return NULL;
+            memcpy((char*)newsh+hdrlen, s, len+1);
+            s = (char*)newsh+hdrlen;
+            s[-1] = type;
+            sdssetlen(s, len);
+            /* Set arena pointer in new header (correct struct type) */
+            switch(type & SDS_TYPE_MASK) {
+                case SDS_TYPE_5:  ((struct sdshdr5 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_8:  ((struct sdshdr8 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_16: ((struct sdshdr16 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_32: ((struct sdshdr32 *)newsh)->_arena = (void*)a; break;
+                case SDS_TYPE_64: ((struct sdshdr64 *)newsh)->_arena = (void*)a; break;
+            }
+        }
     }
     sdssetalloc(s, len);
     return s;
@@ -523,11 +586,11 @@ int sdsull2str(char *s, unsigned long long v) {
  *
  * sdscatprintf(sdsempty(),"%lld\n", value);
  */
-sds sdsfromlonglong(long long value) {
+sds sdsfromlonglong(Arena *a, long long value) {
     char buf[SDS_LLSTR_SIZE];
     int len = sdsll2str(buf,value);
 
-    return sdsnewlen(buf,len);
+    return sdsnewlen(a, buf, len);
 }
 
 /* Like sdscatprintf() but gets va_list instead of being variadic. */
@@ -538,9 +601,11 @@ sds sdscatvprintf(sds s, const char *fmt, va_list ap) {
     int bufstrlen;
 
     /* We try to start using a static buffer for speed.
-     * If not possible we revert to heap allocation. */
+     * If not possible we revert to heap allocation.
+     * In arena mode, temp buffers use raw malloc/free to avoid
+     * polluting the arena with short-lived allocations. */
     if (buflen > sizeof(staticbuf)) {
-        buf = s_malloc(buflen);
+        buf = malloc(buflen);
         if (buf == NULL) return NULL;
     } else {
         buflen = sizeof(staticbuf);
@@ -553,13 +618,17 @@ sds sdscatvprintf(sds s, const char *fmt, va_list ap) {
         bufstrlen = vsnprintf(buf, buflen, fmt, cpy);
         va_end(cpy);
         if (bufstrlen < 0) {
-            if (buf != staticbuf) s_free(buf);
+            if (buf != staticbuf) {
+                free(buf);
+            }
             return NULL;
         }
         if (((size_t)bufstrlen) >= buflen) {
-            if (buf != staticbuf) s_free(buf);
+            if (buf != staticbuf) {
+                free(buf);
+            }
             buflen = ((size_t)bufstrlen) + 1;
-            buf = s_malloc(buflen);
+            buf = malloc(buflen);
             if (buf == NULL) return NULL;
             continue;
         }
@@ -568,7 +637,9 @@ sds sdscatvprintf(sds s, const char *fmt, va_list ap) {
 
     /* Finally concat the obtained string to the SDS string and return it. */
     t = sdscatlen(s, buf, bufstrlen);
-    if (buf != staticbuf) s_free(buf);
+    if (buf != staticbuf) {
+        free(buf);
+    }
     return t;
 }
 
@@ -832,7 +903,7 @@ int sdscmp(const sds s1, const sds s2) {
  * requires length arguments. sdssplit() is just the
  * same function but for zero-terminated strings.
  */
-sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *count) {
+sds *sdssplitlen(Arena *a, const char *s, ssize_t len, const char *sep, int seplen, int *count) {
     int elements = 0, slots = 5;
     long start = 0, j;
     sds *tokens;
@@ -842,7 +913,7 @@ sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *c
         return NULL;
     }
 
-    tokens = s_malloc(sizeof(sds)*slots);
+    tokens = arena_alloc(a, sizeof(sds)*slots);
     if (tokens == NULL) return NULL;
 
     for (j = 0; j < (len-(seplen-1)); j++) {
@@ -851,13 +922,13 @@ sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *c
             sds *newtokens;
 
             slots *= 2;
-            newtokens = s_realloc(tokens,sizeof(sds)*slots);
+            newtokens = arena_realloc(a, tokens, sizeof(sds)*(slots/2), sizeof(sds)*slots);
             if (newtokens == NULL) goto cleanup;
             tokens = newtokens;
         }
         /* search the separator */
         if ((seplen == 1 && *(s+j) == sep[0]) || (memcmp(s+j,sep,seplen) == 0)) {
-            tokens[elements] = sdsnewlen(s+start,j-start);
+            tokens[elements] = sdsnewlen(a, s+start, j-start);
             if (tokens[elements] == NULL) goto cleanup;
             elements++;
             start = j+seplen;
@@ -865,7 +936,7 @@ sds *sdssplitlen(const char *s, ssize_t len, const char *sep, int seplen, int *c
         }
     }
     /* Add the final element. We are sure there is room in the tokens array. */
-    tokens[elements] = sdsnewlen(s+start,len-start);
+    tokens[elements] = sdsnewlen(a, s+start, len-start);
     if (tokens[elements] == NULL) goto cleanup;
     elements++;
     *count = elements;
@@ -875,18 +946,20 @@ cleanup:
     {
         int i;
         for (i = 0; i < elements; i++) sdsfree(tokens[i]);
-        s_free(tokens);
         *count = 0;
         return NULL;
     }
 }
 
-/* Free the result returned by sdssplitlen(), or do nothing if 'tokens' is NULL. */
+/* Free the result returned by sdssplitlen(), or do nothing if 'tokens' is NULL.
+ *
+ * In arena mode both sdsfree'ing individual tokens and freeing the tokens
+ * array are no-ops — everything lives in the same arena and will be
+ * reclaimed together by arena_reset() / arena_free(). */
 void sdsfreesplitres(sds *tokens, int count) {
     if (!tokens) return;
     while(count--)
         sdsfree(tokens[count]);
-    s_free(tokens);
 }
 
 /* Append to the sds string "s" an escaped string representation where
@@ -970,7 +1043,7 @@ int hex_digit_to_int(char c) {
  * quotes or closed quotes followed by non space characters
  * as in: "foo"bar or "foo'
  */
-sds *sdssplitargs(const char *line, int *argc) {
+sds *sdssplitargs(Arena *a, const char *line, int *argc) {
     const char *p = line;
     char *current = NULL;
     char **vector = NULL;
@@ -985,7 +1058,7 @@ sds *sdssplitargs(const char *line, int *argc) {
             int insq=0; /* set to 1 if we are in 'single quotes' */
             int done=0;
 
-            if (current == NULL) current = sdsempty();
+            if (current == NULL) current = sdsempty(a);
             while(!done) {
                 if (inq) {
                     if (*p == '\\' && *(p+1) == 'x' &&
@@ -1060,13 +1133,16 @@ sds *sdssplitargs(const char *line, int *argc) {
                 if (*p) p++;
             }
             /* add the token to the vector */
-            vector = s_realloc(vector,((*argc)+1)*sizeof(char*));
+            {
+                size_t old_size = (*argc)*sizeof(char*);
+                vector = arena_realloc(a, vector, old_size, ((*argc)+1)*sizeof(char*));
+            }
             vector[*argc] = current;
             (*argc)++;
             current = NULL;
         } else {
             /* Even on empty input string return something not NULL. */
-            if (vector == NULL) vector = s_malloc(sizeof(void*));
+            if (vector == NULL) vector = arena_alloc(a, sizeof(void*));
             return vector;
         }
     }
@@ -1074,7 +1150,6 @@ sds *sdssplitargs(const char *line, int *argc) {
 err:
     while((*argc)--)
         sdsfree(vector[*argc]);
-    s_free(vector);
     if (current) sdsfree(current);
     *argc = 0;
     return NULL;
@@ -1105,8 +1180,8 @@ sds sdsmapchars(sds s, const char *from, const char *to, size_t setlen) {
 
 /* Join an array of C strings using the specified separator (also a C string).
  * Returns the result as an sds string. */
-sds sdsjoin(char **argv, int argc, char *sep) {
-    sds join = sdsempty();
+sds sdsjoin(Arena *a, char **argv, int argc, char *sep) {
+    sds join = sdsempty(a);
     int j;
 
     for (j = 0; j < argc; j++) {
@@ -1117,8 +1192,8 @@ sds sdsjoin(char **argv, int argc, char *sep) {
 }
 
 /* Like sdsjoin, but joins an array of SDS strings. */
-sds sdsjoinsds(sds *argv, int argc, const char *sep, size_t seplen) {
-    sds join = sdsempty();
+sds sdsjoinsds(Arena *a, sds *argv, int argc, const char *sep, size_t seplen) {
+    sds join = sdsempty(a);
     int j;
 
     for (j = 0; j < argc; j++) {
@@ -1128,201 +1203,3 @@ sds sdsjoinsds(sds *argv, int argc, const char *sep, size_t seplen) {
     return join;
 }
 
-/* Wrappers to the allocators used by SDS. Note that SDS will actually
- * just use the macros defined into sdsalloc.h in order to avoid to pay
- * the overhead of function calls. Here we define these wrappers only for
- * the programs SDS is linked to, if they want to touch the SDS internals
- * even if they use a different allocator. */
-void *sds_malloc(size_t size) { return s_malloc(size); }
-void *sds_realloc(void *ptr, size_t size) { return s_realloc(ptr,size); }
-void sds_free(void *ptr) { s_free(ptr); }
-
-#if defined(SDS_TEST_MAIN)
-#include <stdio.h>
-#include "testhelp.h"
-#include "limits.h"
-
-#define UNUSED(x) (void)(x)
-int sdsTest(void) {
-    {
-        sds x = sdsnew("foo"), y;
-
-        test_cond("Create a string and obtain the length",
-            sdslen(x) == 3 && memcmp(x,"foo\0",4) == 0)
-
-        sdsfree(x);
-        x = sdsnewlen("foo",2);
-        test_cond("Create a string with specified length",
-            sdslen(x) == 2 && memcmp(x,"fo\0",3) == 0)
-
-        x = sdscat(x,"bar");
-        test_cond("Strings concatenation",
-            sdslen(x) == 5 && memcmp(x,"fobar\0",6) == 0);
-
-        x = sdscpy(x,"a");
-        test_cond("sdscpy() against an originally longer string",
-            sdslen(x) == 1 && memcmp(x,"a\0",2) == 0)
-
-        x = sdscpy(x,"xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk");
-        test_cond("sdscpy() against an originally shorter string",
-            sdslen(x) == 33 &&
-            memcmp(x,"xyzxxxxxxxxxxyyyyyyyyyykkkkkkkkkk\0",33) == 0)
-
-        sdsfree(x);
-        x = sdscatprintf(sdsempty(),"%d",123);
-        test_cond("sdscatprintf() seems working in the base case",
-            sdslen(x) == 3 && memcmp(x,"123\0",4) == 0)
-
-        sdsfree(x);
-        x = sdscatprintf(sdsempty(),"a%cb",0);
-        test_cond("sdscatprintf() seems working with \\0 inside of result",
-            sdslen(x) == 3 && memcmp(x,"a\0""b\0",4) == 0)
-
-        {
-            sdsfree(x);
-            char etalon[1024*1024];
-            for (size_t i = 0; i < sizeof(etalon); i++) {
-                etalon[i] = '0';
-            }
-            x = sdscatprintf(sdsempty(),"%0*d",(int)sizeof(etalon),0);
-            test_cond("sdscatprintf() can print 1MB",
-                sdslen(x) == sizeof(etalon) && memcmp(x,etalon,sizeof(etalon)) == 0)
-        }
-
-        sdsfree(x);
-        x = sdsnew("--");
-        x = sdscatfmt(x, "Hello %s World %I,%I--", "Hi!", LLONG_MIN,LLONG_MAX);
-        test_cond("sdscatfmt() seems working in the base case",
-            sdslen(x) == 60 &&
-            memcmp(x,"--Hello Hi! World -9223372036854775808,"
-                     "9223372036854775807--",60) == 0)
-        printf("[%s]\n",x);
-
-        sdsfree(x);
-        x = sdsnew("--");
-        x = sdscatfmt(x, "%u,%U--", UINT_MAX, ULLONG_MAX);
-        test_cond("sdscatfmt() seems working with unsigned numbers",
-            sdslen(x) == 35 &&
-            memcmp(x,"--4294967295,18446744073709551615--",35) == 0)
-
-        sdsfree(x);
-        x = sdsnew(" x ");
-        sdstrim(x," x");
-        test_cond("sdstrim() works when all chars match",
-            sdslen(x) == 0)
-
-        sdsfree(x);
-        x = sdsnew(" x ");
-        sdstrim(x," ");
-        test_cond("sdstrim() works when a single char remains",
-            sdslen(x) == 1 && x[0] == 'x')
-
-        sdsfree(x);
-        x = sdsnew("xxciaoyyy");
-        sdstrim(x,"xy");
-        test_cond("sdstrim() correctly trims characters",
-            sdslen(x) == 4 && memcmp(x,"ciao\0",5) == 0)
-
-        y = sdsdup(x);
-        sdsrange(y,1,1);
-        test_cond("sdsrange(...,1,1)",
-            sdslen(y) == 1 && memcmp(y,"i\0",2) == 0)
-
-        sdsfree(y);
-        y = sdsdup(x);
-        sdsrange(y,1,-1);
-        test_cond("sdsrange(...,1,-1)",
-            sdslen(y) == 3 && memcmp(y,"iao\0",4) == 0)
-
-        sdsfree(y);
-        y = sdsdup(x);
-        sdsrange(y,-2,-1);
-        test_cond("sdsrange(...,-2,-1)",
-            sdslen(y) == 2 && memcmp(y,"ao\0",3) == 0)
-
-        sdsfree(y);
-        y = sdsdup(x);
-        sdsrange(y,2,1);
-        test_cond("sdsrange(...,2,1)",
-            sdslen(y) == 0 && memcmp(y,"\0",1) == 0)
-
-        sdsfree(y);
-        y = sdsdup(x);
-        sdsrange(y,1,100);
-        test_cond("sdsrange(...,1,100)",
-            sdslen(y) == 3 && memcmp(y,"iao\0",4) == 0)
-
-        sdsfree(y);
-        y = sdsdup(x);
-        sdsrange(y,100,100);
-        test_cond("sdsrange(...,100,100)",
-            sdslen(y) == 0 && memcmp(y,"\0",1) == 0)
-
-        sdsfree(y);
-        sdsfree(x);
-        x = sdsnew("foo");
-        y = sdsnew("foa");
-        test_cond("sdscmp(foo,foa)", sdscmp(x,y) > 0)
-
-        sdsfree(y);
-        sdsfree(x);
-        x = sdsnew("bar");
-        y = sdsnew("bar");
-        test_cond("sdscmp(bar,bar)", sdscmp(x,y) == 0)
-
-        sdsfree(y);
-        sdsfree(x);
-        x = sdsnew("aar");
-        y = sdsnew("bar");
-        test_cond("sdscmp(bar,bar)", sdscmp(x,y) < 0)
-
-        sdsfree(y);
-        sdsfree(x);
-        x = sdsnewlen("\a\n\0foo\r",7);
-        y = sdscatrepr(sdsempty(),x,sdslen(x));
-        test_cond("sdscatrepr(...data...)",
-            memcmp(y,"\"\\a\\n\\x00foo\\r\"",15) == 0)
-
-        {
-            char *p;
-            int step = 10, j, i;
-
-            sdsfree(x);
-            sdsfree(y);
-            x = sdsnew("0");
-            test_cond("sdsnew() free/len buffers", sdslen(x) == 1 && sdsavail(x) == 0);
-
-            /* Run the test a few times in order to hit the first two
-             * SDS header types. */
-            for (i = 0; i < 10; i++) {
-                int oldlen = sdslen(x);
-                x = sdsMakeRoomFor(x,step);
-                int type = x[-1]&SDS_TYPE_MASK;
-
-                test_cond("sdsMakeRoomFor() len", sdslen(x) == oldlen);
-                if (type != SDS_TYPE_5) {
-                    test_cond("sdsMakeRoomFor() free", sdsavail(x) >= step);
-                }
-                p = x+oldlen;
-                for (j = 0; j < step; j++) {
-                    p[j] = 'A'+j;
-                }
-                sdsIncrLen(x,step);
-            }
-            test_cond("sdsMakeRoomFor() content",
-                memcmp("0ABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJABCDEFGHIJ",x,101) == 0);
-            test_cond("sdsMakeRoomFor() final length",sdslen(x)==101);
-
-            sdsfree(x);
-        }
-    }
-    test_report()
-    return 0;
-}
-#endif
-
-#ifdef SDS_TEST_MAIN
-int main(void) {
-    return sdsTest();
-}
-#endif

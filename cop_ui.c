@@ -541,12 +541,12 @@ static void cmd_export(llm_runtime_t *rt) {
     FILE *f = fopen(fname, "w");
     if (!f) {
         printf("Error: cannot write to %s\n", fname);
-        free(json_str);
+        cJSON_free(json_str);
         return;
     }
     fprintf(f, "%s\n", json_str);
     fclose(f);
-    free(json_str);
+    cJSON_free(json_str);
 
     printf("Exported %d messages → %s\n", count, fname);
 }

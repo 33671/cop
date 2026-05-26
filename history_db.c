@@ -25,17 +25,17 @@ struct history_db {
  * Helpers
  * ============================================================================ */
 
-/* Expand ~ in path. Caller must sdsfree the result. */
-static sds expand_path(const char *path) {
+/* Expand ~ in path. Result lives in the given arena. */
+static sds expand_path(Arena *a, const char *path) {
     if (!path) return NULL;
 
     if (path[0] == '~') {
         const char *home = getenv("HOME");
         if (!home) home = "/tmp";
-        return sdscatprintf(sdsempty(), "%s%s", home, path + 1);
+        return sdscatprintf(sdsempty(a), "%s%s", home, path + 1);
     }
 
-    return sdsnew(path);
+    return sdsnew(a, path);
 }
 
 /* Create parent directories for a file path. */
@@ -84,8 +84,10 @@ int history_db_open(history_db_t **db_out) {
     history_db_t *db = calloc(1, sizeof(history_db_t));
     if (!db) return -1;
 
-    sds db_path = expand_path("~/.cop/history.sql");
+    Arena a = {0};
+    sds db_path = expand_path(&a, "~/.cop/history.sql");
     if (!db_path) {
+        arena_free(&a);
         free(db);
         return -1;
     }
@@ -94,7 +96,7 @@ int history_db_open(history_db_t **db_out) {
     mkdir_p(db_path);
 
     int rc = sqlite3_open(db_path, &db->conn);
-    sdsfree(db_path);
+    arena_free(&a);
 
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[history_db] cannot open database: %s\n",
@@ -359,11 +361,11 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
             fprintf(stderr, "[history_db] save_step insert: %s\n",
                     sqlite3_errmsg(db->conn));
             ok = 0;
-            free(tool_calls_str);
+            cJSON_free(tool_calls_str);
             break;
         }
 
-        free(tool_calls_str);
+        cJSON_free(tool_calls_str);
     }
 
     sqlite3_finalize(stmt);

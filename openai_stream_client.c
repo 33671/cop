@@ -301,7 +301,7 @@ void stream_client_set_max_tokens(stream_client_t *c, int max_tokens) {
  *
  * messages: cJSON Array of message objects (e.g. [{"role":"user","content":"hi"}])
  *           May be NULL if no user messages (only system message will be sent).
- * Returns: malloc'd JSON string, or NULL on error. Caller must free().
+ * Returns: arena-allocated JSON string, or NULL on error. (Uses cJSON hooks.)
  */
 static char *build_request_body(stream_client_t *c, cJSON *messages) {
     if (!c) return NULL;
@@ -655,7 +655,7 @@ coroutine int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
         }
     }
 
-    free(body);
+    cJSON_free(body);
 
     if (!success) {
         c->running = 0;

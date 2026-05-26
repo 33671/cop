@@ -105,10 +105,10 @@ int is_valid_json(const char *str, size_t len) {
 /* ============================================================================
  * StreamChunk Helper Functions
  * ============================================================================ */
-static sds safe_get_string(cJSON *obj, const char *key) {
+static sds safe_get_string(Arena *a, cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItem(obj, key);
     if (cJSON_IsString(item))
-        return sdsnew(item->valuestring);
+        return sdsnew(a, item->valuestring);
     return NULL;
 }
 
@@ -121,16 +121,15 @@ static int safe_get_int(cJSON *obj, const char *key, int default_val) {
 
 void stream_chunk_cleanup(StreamChunk *chunk) {
     if (!chunk) return;
-    sdsfree(chunk->id);
-    sdsfree(chunk->content);
-    sdsfree(chunk->reasoning_content);
     if (chunk->tool_calls) cJSON_Delete(chunk->tool_calls);
+    arena_free(&chunk->arena);
     memset(chunk, 0, sizeof(StreamChunk));
 }
 
 int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src) {
     if (!dst || !src) return -1;
     
+    /* Init dst arena fresh (will be freed by stream_chunk_cleanup) */
     memset(dst, 0, sizeof(StreamChunk));
     
     dst->created = src->created;
@@ -148,10 +147,10 @@ int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src) {
         dst->finish_reason[sizeof(dst->finish_reason) - 1] = '\0';
     }
     
-    if (src->id) dst->id = sdsdup(src->id);
+    if (src->id) dst->id = sdsdupTo(&dst->arena, src->id);
     if (src->role) dst->role = src->role;
-    if (src->content) dst->content = sdsdup(src->content);
-    if (src->reasoning_content) dst->reasoning_content = sdsdup(src->reasoning_content);
+    if (src->content) dst->content = sdsdupTo(&dst->arena, src->content);
+    if (src->reasoning_content) dst->reasoning_content = sdsdupTo(&dst->arena, src->reasoning_content);
     if (src->tool_calls) dst->tool_calls = cJSON_Duplicate(src->tool_calls, 1);
     
     return 0;
@@ -184,7 +183,7 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
     }
     
     /* Extract top-level fields */
-    chunk->id = safe_get_string(root, "id");
+    chunk->id = safe_get_string(&chunk->arena, root, "id");
     // chunk->model = safe_get_string(root, "model");
     chunk->created = safe_get_int(root, "created", 0);
     
@@ -211,18 +210,17 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
     
     /* Extract delta fields */
     {
-        sds role_str = safe_get_string(delta, "role");
+        sds role_str = safe_get_string(&chunk->arena, delta, "role");
         chunk->role = str_to_role(role_str);
-        sdsfree(role_str);
     }
-    chunk->content = safe_get_string(delta, "content");
+    chunk->content = safe_get_string(&chunk->arena, delta, "content");
     
     /* Reasoning content */
     cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
     if (!cJSON_IsString(reasoning))
         reasoning = cJSON_GetObjectItem(delta, "thinking");
     if (cJSON_IsString(reasoning))
-        chunk->reasoning_content = sdsnew(reasoning->valuestring);
+        chunk->reasoning_content = sdsnew(&chunk->arena, reasoning->valuestring);
     
     /* Tool calls */
     cJSON *tool_calls = cJSON_GetObjectItem(delta, "tool_calls");

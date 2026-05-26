@@ -26,6 +26,7 @@ struct llm_runtime {
     LlmParser *parser;
 
     /* Cached config strings (also stored inside stream_client) */
+    Arena arena;
     sds api_key;
     sds model;
     sds api_endpoint;
@@ -78,11 +79,11 @@ llm_runtime_t *llm_runtime_new(const char *api_key, const char *model,
     llm_runtime_t *rt = calloc(1, sizeof(llm_runtime_t));
     if (!rt) return NULL;
 
-    rt->api_key        = sdsnew(api_key);
-    rt->model          = sdsnew(model);
-    rt->api_endpoint   = sdsnew(api_endpoint ? api_endpoint
+    rt->api_key        = sdsnew(&rt->arena, api_key);
+    rt->model          = sdsnew(&rt->arena, model);
+    rt->api_endpoint   = sdsnew(&rt->arena, api_endpoint ? api_endpoint
                              : "https://api.moonshot.cn/v1/chat/completions");
-    rt->log_file       = log_file ? sdsnew(log_file) : NULL;
+    rt->log_file       = log_file ? sdsnew(&rt->arena, log_file) : NULL;
     rt->running        = 1;
 
     /* Create stream client */
@@ -111,10 +112,7 @@ void llm_runtime_free(llm_runtime_t *rt) {
     if (rt->client) stream_client_free(rt->client);
     if (rt->parser) llm_parser_destroy(rt->parser);
 
-    sdsfree(rt->api_key);
-    sdsfree(rt->model);
-    sdsfree(rt->api_endpoint);
-    sdsfree(rt->log_file);
+    arena_free(&rt->arena);
     free(rt);
 }
 
@@ -141,10 +139,9 @@ int llm_runtime_set_model(llm_runtime_t *rt, const char *model,
     if (!rt || !model) return -1;
     stream_client_set_model(rt->client, model);
     stream_client_set_api(rt->client, api_key, api_endpoint);
-    sdsfree(rt->model);
-    rt->model = sdsnew(model);
-    if (api_key)     { sdsfree(rt->api_key);      rt->api_key      = sdsnew(api_key); }
-    if (api_endpoint) { sdsfree(rt->api_endpoint); rt->api_endpoint = sdsnew(api_endpoint); }
+    rt->model = sdsnew(&rt->arena, model);
+    if (api_key)     { rt->api_key      = sdsnew(&rt->arena, api_key); }
+    if (api_endpoint) { rt->api_endpoint = sdsnew(&rt->arena, api_endpoint); }
     return 0;
 }
 
