@@ -7,7 +7,7 @@
 #include <sys/ioctl.h>
 
 #include "md4c.h"
-#include "utils_ut8.h"
+#include "utils_utf8.h"
 #include "sds.h"
 #include "stream_md_renderer.h"
 

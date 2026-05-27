@@ -361,11 +361,11 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
             fprintf(stderr, "[history_db] save_step insert: %s\n",
                     sqlite3_errmsg(db->conn));
             ok = 0;
-            cJSON_free(tool_calls_str);
+            free(tool_calls_str);
             break;
         }
 
-        cJSON_free(tool_calls_str);
+        free(tool_calls_str);
     }
 
     sqlite3_finalize(stmt);

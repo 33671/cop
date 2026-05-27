@@ -15,7 +15,7 @@
 #include <errno.h>
 #include "sds/sds.h"
 #include "isocline/include/isocline.h"
-#include "utils_ut8.h"
+#include "utils_utf8.h"
 
 /* ============================================================================
  * Shared static arena for all tool functions (avoids malloc/free churn)

@@ -211,7 +211,7 @@ target_link_libraries(tool_functions
     isocline
     llm_runtime
     cjson
-    utils_ut8
+    utils_utf8
 )
 target_include_directories(tool_functions PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -220,7 +220,7 @@ target_include_directories(tool_functions PUBLIC
 )
 
 # cop — main agent executable
-add_executable(cop cop.c cop_ui.c cjson_arena.c)
+add_executable(cop cop.c cop_ui.c)
 target_compile_options(cop PRIVATE
     -fno-stack-clash-protection
 )
@@ -261,8 +261,8 @@ target_link_libraries(llm_runtime_test
 )
 
 # UTF-8 Sanitizer library and tests
-add_library(utils_ut8 STATIC utils_ut8.c)
-target_include_directories(utils_ut8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+add_library(utils_utf8 STATIC utils_utf8.c)
+target_include_directories(utils_utf8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # md4c Markdown parser (amalgamation)
 add_library(md4c STATIC
@@ -281,7 +281,7 @@ add_library(stream_md_renderer STATIC stream_md_renderer.c)
 target_link_libraries(stream_md_renderer
     md4c
     sds
-    utils_ut8
+    utils_utf8
 )
 target_include_directories(stream_md_renderer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -289,7 +289,7 @@ target_include_directories(stream_md_renderer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
 
-add_executable(test_sanitize_utf8 test_sanitize_utf8.c utils_ut8.c)
+add_executable(test_sanitize_utf8 test_sanitize_utf8.c utils_utf8.c)
 target_include_directories(test_sanitize_utf8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_sanitize_utf8 PRIVATE -Wall -Wextra)
 

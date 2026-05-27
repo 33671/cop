@@ -6,7 +6,7 @@
  * and the NULL-pointer guard.
  *
  * Build:
- *   cc -Wall -Wextra -o test_sanitize_utf8 test_sanitize_utf8.c utils_ut8.c
+ *   cc -Wall -Wextra -o test_sanitize_utf8 test_sanitize_utf8.c utils_utf8.c
  *
  * Or via CMake (see CMakeLists.txt in the project root).
  */
@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include "utils_ut8.h"
+#include "utils_utf8.h"
 
 /* ── helpers ──────────────────────────────────────────────────────────── */
 

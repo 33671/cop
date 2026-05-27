@@ -73,8 +73,9 @@ static void reset_assistant(LlmParser *p)
         cJSON_Delete(p->assistant.msg);
         p->assistant.msg = NULL;
     }
-    sdsclear(p->assistant.content_buf);
-    sdsclear(p->assistant.reasoning_buf);
+    arena_reset(&p->arena);
+    p->assistant.content_buf = sdsempty(&p->arena);
+    p->assistant.reasoning_buf = sdsempty(&p->arena);
     // reset tool call parser
     toolcall_parser_reset(&p->tool_call_parser);
 
@@ -326,9 +327,6 @@ void llm_parser_reset(LlmParser *p)
     memset(&p->last_usage, 0, sizeof(p->last_usage));
     p->last_usage.cached_tokens = -1;
     p->error_msg[0] = '\0';
-    arena_reset(&p->arena);
-    p->assistant.content_buf = sdsempty(&p->arena);
-    p->assistant.reasoning_buf = sdsempty(&p->arena);
 }
 
 const char *llm_parser_get_error(const LlmParser *p)
