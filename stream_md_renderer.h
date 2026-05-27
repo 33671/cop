@@ -67,8 +67,9 @@ void md_print_diff(const char *old_text, int old_lines,
 
 typedef struct {
     md_renderer_t *r;
-    sds            prev;
-    int            prev_lines;
+    char          *prev;        /* malloc'd copy of previous rendered output */
+    int            prev_len;    /* byte length of prev */
+    int            prev_lines;  /* line count of prev */
 } md_display_t;
 
 /* Initialize a display. max_width is passed to the internal renderer. */

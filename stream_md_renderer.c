@@ -1084,15 +1084,15 @@ int md_get_terminal_width(void) {
  * ════════════════════════════════════════════════════════════════ */
 
 struct md_renderer {
-    Arena arena;    /* arena for raw + rendered output */
-    sds raw;        /* accumulated raw markdown */
-    int max_width;  /* rendering width (0 = unlimited) */
+    Arena  arena;    /* arena for rendered output (reset each feed) */
+    char  *raw_buf;  /* accumulated raw markdown (malloc'd) */
+    size_t raw_len;  /* byte length of raw_buf */
+    int    max_width;
 };
 
 md_renderer_t *md_renderer_new(int max_width) {
     md_renderer_t *r = malloc(sizeof(*r));
     memset(r, 0, sizeof(*r));
-    r->raw = sdsempty(&r->arena);
     r->max_width = max_width;
     return r;
 }
@@ -1100,18 +1100,29 @@ md_renderer_t *md_renderer_new(int max_width) {
 void md_renderer_free(md_renderer_t *r) {
     if (!r) return;
     arena_free(&r->arena);
+    free(r->raw_buf);
     free(r);
 }
 
 void md_renderer_reset(md_renderer_t *r) {
     if (!r) return;
     arena_reset(&r->arena);
-    r->raw = sdsempty(&r->arena);
+    free(r->raw_buf);
+    r->raw_buf = NULL;
+    r->raw_len = 0;
 }
 
 sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
     if (!r || !text || len <= 0) return sdsempty(&r->arena);
-    r->raw = sdscatlen(r->raw, text, (size_t)len);
+
+    /* Append to raw buffer (plain malloc, not arena) */
+    size_t new_len = r->raw_len + (size_t)len;
+    char *new_buf = realloc(r->raw_buf, new_len + 1);
+    if (!new_buf) return sdsempty(&r->arena);  /* OOM: raw unchanged */
+    memcpy(new_buf + r->raw_len, text, (size_t)len);
+    new_buf[new_len] = '\0';
+    r->raw_buf = new_buf;
+    r->raw_len = new_len;
 
     /* Determine effective width */
     int w = r->max_width;
@@ -1119,8 +1130,12 @@ sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
         w = md_get_terminal_width();
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
 
-    /* Parse and render */
-    sds rendered = render_markdown(&r->arena, r->raw, sdslen(r->raw), w);
+    /* Reset arena so each feed only holds the *current* rendered output,
+     * avoiding O(N²) growth from accumulated historical renders. */
+    arena_reset(&r->arena);
+
+    /* Parse and render from scratch */
+    sds rendered = render_markdown(&r->arena, r->raw_buf, r->raw_len, w);
 
     /* Wrap to terminal width so \n count == row count */
     if (w > 0) {
@@ -1136,7 +1151,8 @@ sds md_renderer_output(md_renderer_t *r) {
     if (w <= 0 && isatty(fileno(stdout)))
         w = md_get_terminal_width();
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
-    sds rendered = render_markdown(&r->arena, r->raw, sdslen(r->raw), w);
+    arena_reset(&r->arena);
+    sds rendered = render_markdown(&r->arena, r->raw_buf, r->raw_len, w);
     if (w > 0) {
         sds wrapped = wrap_rendered_to_width(&r->arena, rendered, sdslen(rendered), w);
         return wrapped;
@@ -1145,7 +1161,7 @@ sds md_renderer_output(md_renderer_t *r) {
 }
 
 sds md_renderer_raw(md_renderer_t *r) {
-    return r ? r->raw : NULL;
+    return r ? r->raw_buf : NULL;
 }
 
 /* ── Diff helpers ─────────────────────────────────────────── */
@@ -1240,13 +1256,16 @@ void md_display_init(md_display_t *d, int max_width) {
 void md_display_free(md_display_t *d) {
     if (!d) return;
     md_renderer_free(d->r);
+    free(d->prev);
     memset(d, 0, sizeof(*d));
 }
 
 void md_display_reset(md_display_t *d) {
     if (!d) return;
     md_renderer_reset(d->r);
+    free(d->prev);
     d->prev = NULL;
+    d->prev_len = 0;
     d->prev_lines = 0;
 }
 
@@ -1255,21 +1274,32 @@ void md_display_feed(md_display_t *d, const char *text, int len) {
 
     sds cur = md_renderer_feed(d->r, text, len);
     int cur_lines = md_count_lines(cur);
+    int cur_len   = (int)sdslen(cur);
 
     if (!d->prev) {
         /* First chunk: output directly */
-        fwrite(cur, 1, sdslen(cur), stdout);
+        fwrite(cur, 1, (size_t)cur_len, stdout);
         fflush(stdout);
-        d->prev = cur;
-        d->prev_lines = cur_lines;
     } else {
         /* Diff-based in-place update */
-        int first = md_compute_diff(d->prev, (int)sdslen(d->prev),
-                                     cur, (int)sdslen(cur));
+        int first = md_compute_diff(d->prev, d->prev_len,
+                                     cur, cur_len);
         if (first >= 0) {
             md_print_diff(d->prev, d->prev_lines, cur, cur_lines, first);
         }
-        d->prev = cur;
+    }
+
+    /* Save current as prev for next diff (malloc copy — cur lives in
+     * the renderer arena and will be invalidated on the next feed). */
+    free(d->prev);
+    d->prev = malloc((size_t)cur_len + 1);
+    if (d->prev) {
+        memcpy(d->prev, cur, (size_t)cur_len + 1);
+        d->prev_len   = cur_len;
         d->prev_lines = cur_lines;
+    } else {
+        d->prev = NULL;
+        d->prev_len   = 0;
+        d->prev_lines = 0;
     }
 }
