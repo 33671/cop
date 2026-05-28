@@ -17,6 +17,13 @@
 #include "isocline/include/isocline.h"
 #include "utils_utf8.h"
 
+/* [debug] log — compiled out unless -DDEBUG is set */
+#ifdef DEBUG
+#define debug_log(...)  fprintf(stderr, __VA_ARGS__)
+#else
+#define debug_log(...)  ((void)0)
+#endif
+
 /* ============================================================================
  * Shared static arena for all tool functions (avoids malloc/free churn)
  * ============================================================================ */
@@ -100,15 +107,15 @@ static int ask_approval(llm_runtime_t *rt, const char *prompt) {
 static int check_approval(llm_runtime_t *rt, cJSON *result,
                            const char *prompt, const char *deny_msg) {
     int a = ask_approval(rt, prompt);
-    fprintf(stderr, "\n[debug] check_approval: result=%d\n", a);
+    debug_log("\n[debug] check_approval: result=%d\n", a);
     if (a < 0) {
-        fprintf(stderr, "[debug] check_approval: Ctrl+C, cancelling runtime\n");
+        debug_log("[debug] check_approval: Ctrl+C, cancelling runtime\n");
         llm_runtime_cancel(rt);
         cJSON_AddStringToObject(result, "text", "cancelled");
         return 0;
     }
     if (a == 0) {
-        fprintf(stderr, "[debug] check_approval: user denied, cancelling runtime\n");
+        debug_log("[debug] check_approval: user denied, cancelling runtime\n");
         llm_runtime_cancel(rt);
         cJSON_AddStringToObject(result, "text", deny_msg);
         return 0;

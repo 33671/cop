@@ -19,6 +19,13 @@
 #include "cjson_arena.h"
 #include "tool_functions.h"
 
+/* [debug] log — compiled out unless -DDEBUG is set */
+#ifdef DEBUG
+#define debug_log(...)  fprintf(stderr, __VA_ARGS__)
+#else
+#define debug_log(...)  ((void)0)
+#endif
+
 /* ============================================================================
  * Internal Structure
  * ============================================================================ */
@@ -435,7 +442,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
 
         /* Check cancellation before starting a new request */
         if (llm_runtime_is_cancelled(rt)) {
-            fprintf(stderr, "\n[debug] tool loop iter=%d: cancelled at top of loop, stopping\n", loop_count);
+            debug_log("\n[debug] tool loop iter=%d: cancelled at top of loop, stopping\n", loop_count);
             llm_parser_force_finish(rt->parser);
             set_error(rt, "cancelled");
             if (on_chunk) {
@@ -571,7 +578,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         int stream_error = (stream_client_get_state(rt->client) == CLIENT_STATE_ERROR
                             && !stream_was_cancelled && !llm_runtime_is_cancelled(rt));
         if (stream_was_cancelled || llm_runtime_is_cancelled(rt) || stream_error) {
-            fprintf(stderr, "\n[debug] tool loop iter=%d: stream ended abnormally (cancelled=%d runtime_cancelled=%d stream_error=%d)\n",
+            debug_log("\n[debug] tool loop iter=%d: stream ended abnormally (cancelled=%d runtime_cancelled=%d stream_error=%d)\n",
                     loop_count, stream_was_cancelled, llm_runtime_is_cancelled(rt), stream_error);
             llm_parser_force_finish(rt->parser);
 
@@ -601,7 +608,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
 
         /* ---- Step 6: Check for tool calls in the last assistant message ---- */
         if (!saw_tool_calls) {
-            fprintf(stderr, "\n[debug] tool loop iter=%d: no tool_calls detected in stream, ending turn\n", loop_count);
+            debug_log("\n[debug] tool loop iter=%d: no tool_calls detected in stream, ending turn\n", loop_count);
             break;  /* no tools -> turn complete */
         }
 
@@ -620,7 +627,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         cJSON *tool_calls_json = cJSON_GetObjectItem(last, "tool_calls");
         if (!tool_calls_json || !cJSON_IsArray(tool_calls_json) ||
             cJSON_GetArraySize(tool_calls_json) == 0) {
-            fprintf(stderr, "\n[debug] tool loop iter=%d: tool_calls_json missing/empty in last message, ending turn\n", loop_count);
+            debug_log("\n[debug] tool loop iter=%d: tool_calls_json missing/empty in last message, ending turn\n", loop_count);
             break;
         }
 
@@ -632,7 +639,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
 
         int executed = execute_tool_calls(rt, tool_calls_json,
                                           on_chunk, user_data);
-        fprintf(stderr, "\n[debug] tool loop iter=%d: executed %d tool(s)\n", loop_count, executed);
+        debug_log("\n[debug] tool loop iter=%d: executed %d tool(s)\n", loop_count, executed);
         if (executed < 0) {
             set_error(rt, "tool execution failed");
             return -1;
@@ -640,7 +647,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
 
         /* If cancellation was requested during tool execution, don't loop */
         if (llm_runtime_is_cancelled(rt)) {
-            fprintf(stderr, "\n[debug] tool loop iter=%d: cancelled after tool execution, stopping\n", loop_count);
+            debug_log("\n[debug] tool loop iter=%d: cancelled after tool execution, stopping\n", loop_count);
             if (on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
             }
@@ -662,7 +669,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         printf("\n\033[1;33m[tool loop limit] %d iterations reached, ending turn. "
                "Continue in next message.\033[0m\n", LLM_RUNTIME_MAX_TOOL_LOOPS);
     }
-    fprintf(stderr, "\n[debug] tool loop: turn complete after %d iteration(s)\n", loop_count);
+    debug_log("\n[debug] tool loop: turn complete after %d iteration(s)\n", loop_count);
     if (on_chunk) {
         on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
     }

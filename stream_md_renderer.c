@@ -1107,6 +1107,7 @@ void md_renderer_free(md_renderer_t *r) {
 void md_renderer_reset(md_renderer_t *r) {
     if (!r) return;
     arena_reset(&r->arena);
+    arena_trim(&r->arena);
     free(r->raw_buf);
     r->raw_buf = NULL;
     r->raw_len = 0;
@@ -1133,6 +1134,7 @@ sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
     /* Reset arena so each feed only holds the *current* rendered output,
      * avoiding O(N²) growth from accumulated historical renders. */
     arena_reset(&r->arena);
+    arena_trim(&r->arena);
 
     /* Parse and render from scratch */
     sds rendered = render_markdown(&r->arena, r->raw_buf, r->raw_len, w);
@@ -1152,6 +1154,7 @@ sds md_renderer_output(md_renderer_t *r) {
         w = md_get_terminal_width();
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
     arena_reset(&r->arena);
+    arena_trim(&r->arena);
     sds rendered = render_markdown(&r->arena, r->raw_buf, r->raw_len, w);
     if (w > 0) {
         sds wrapped = wrap_rendered_to_width(&r->arena, rendered, sdslen(rendered), w);
