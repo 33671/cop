@@ -5,6 +5,8 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_BUILD_TYPE Release)
+
+set(COMPILE_WARNING_CONTROL -Wall -Wextra -Werror)
 # Find required packages
 find_package(CURL REQUIRED)
 
@@ -81,6 +83,7 @@ target_link_libraries(openai_sse_parser
     cjson
     sds
 )
+target_compile_options(openai_sse_parser PRIVATE ${COMPILE_WARNING_CONTROL})
 target_include_directories(openai_sse_parser PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
@@ -91,10 +94,12 @@ target_include_directories(openai_sse_parser PUBLIC
 add_library(openai_stream_client_lib STATIC
     openai_stream_client.c
 )
+target_compile_options(openai_stream_client_lib PRIVATE ${COMPILE_WARNING_CONTROL})
 
 add_library(tool_call_parser STATIC
     tool_call_parser.c
 )
+target_compile_options(tool_call_parser PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(tool_call_parser 
     cjson
     sds
@@ -106,6 +111,7 @@ target_include_directories(tool_call_parser PUBLIC
 )
 
 add_library(llm_parser STATIC llm_parser.c)
+target_compile_options(llm_parser PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(llm_parser 
     cjson
     openai_sse_parser
@@ -118,6 +124,7 @@ target_include_directories(llm_parser PUBLIC
 
 # LLM Runtime (high-level orchestration)
 add_library(llm_runtime STATIC llm_runtime.c)
+target_compile_options(llm_runtime PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(llm_runtime
     openai_stream_client_lib
     llm_parser
@@ -181,6 +188,7 @@ target_compile_options(sqlite3 PRIVATE
 
 # History database (SQLite-backed session/message storage)
 add_library(history_db STATIC history_db.c)
+target_compile_options(history_db PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(history_db
     sqlite3
     cjson
@@ -195,6 +203,7 @@ target_include_directories(history_db PUBLIC
 
 # Models configuration (parses ~/.agent/models.json)
 add_library(models_config STATIC models_config.c)
+target_compile_options(models_config PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(models_config
     cjson
 )
@@ -205,9 +214,11 @@ target_include_directories(models_config PUBLIC
 
 # Tool functions (example tool implementations)
 add_library(diff STATIC diff.c)
+target_compile_options(diff PRIVATE ${COMPILE_WARNING_CONTROL})
 target_include_directories(diff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(tool_functions STATIC tool_functions.c)
+target_compile_options(tool_functions PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(tool_functions
     diff
     isocline
@@ -224,6 +235,7 @@ target_include_directories(tool_functions PUBLIC
 # cop — main agent executable
 add_executable(cop cop.c cop_ui.c)
 target_compile_options(cop PRIVATE
+    ${COMPILE_WARNING_CONTROL}
     -fno-stack-clash-protection
 )
 target_link_libraries(cop
@@ -264,6 +276,7 @@ target_link_libraries(llm_runtime_test
 
 # UTF-8 Sanitizer library and tests
 add_library(utils_utf8 STATIC utils_utf8.c)
+target_compile_options(utils_utf8 PRIVATE ${COMPILE_WARNING_CONTROL})
 target_include_directories(utils_utf8 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # md4c Markdown parser (amalgamation)
@@ -280,6 +293,7 @@ target_compile_options(md4c PRIVATE
 
 # Stream Markdown Renderer (incremental MD → ANSI output)
 add_library(stream_md_renderer STATIC stream_md_renderer.c)
+target_compile_options(stream_md_renderer PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(stream_md_renderer
     md4c
     sds

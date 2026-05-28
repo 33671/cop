@@ -20,7 +20,7 @@
 #include <dirent.h>
 
 /* [debug] log — compiled out unless -DDEBUG is set */
-#ifndef DEBUG
+#ifdef DEBUG
 #define debug_log(...)  fprintf(stderr, __VA_ARGS__)
 #else
 #define debug_log(...)  ((void)0)
@@ -289,6 +289,10 @@ static void on_runtime_event(llm_runtime_t *rt,
             md_display_reset(&g_content_display);
         printf("\n\033[1;31mError: %s\033[0m\n", text ? text : "unknown");
         break;
+
+    case LLM_RT_EVENT_USAGE:
+        /* Usage stats are displayed in LLM_RT_EVENT_DONE */
+        break;
     }
 }
 
@@ -376,7 +380,6 @@ static void cmd_load(llm_runtime_t *rt, const char *arg) {
         cJSON *r      = cJSON_GetObjectItem(msg, "role");
         cJSON *c      = cJSON_GetObjectItem(msg, "content");
         cJSON *rc     = cJSON_GetObjectItem(msg, "reasoning_content");
-        cJSON *tc_id  = cJSON_GetObjectItem(msg, "tool_call_id");
         cJSON *tc     = cJSON_GetObjectItem(msg, "tool_calls");
 
         const char *role    = (r && cJSON_IsString(r)) ? r->valuestring : "?";

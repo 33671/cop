@@ -1204,8 +1204,8 @@ void md_print_diff(const char *old_text, int old_lines,
     Arena da = {0};
 
     int old_nl, new_nl;
-    sds_line *old_l = sds_split_lines(&da, old_text,
-                                       old_text ? strlen(old_text) : 0, &old_nl);
+    sds_split_lines(&da, old_text,
+                    old_text ? strlen(old_text) : 0, &old_nl);
     sds_line *new_l = sds_split_lines(&da, new_text,
                                        new_text ? strlen(new_text) : 0, &new_nl);
 

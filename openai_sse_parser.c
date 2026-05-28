@@ -91,6 +91,8 @@ ssize_t find_json_end(const char *str, size_t len) {
     if (root) {
         ssize_t consumed = (ssize_t)(parse_end - str);
         cJSON_Delete(root);
+        /* Safety check: parsed length should not exceed the buffer */
+        if (consumed > (ssize_t)len) return -1;
         return consumed;
     }
     
@@ -143,7 +145,7 @@ int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src) {
     dst->is_valid = src->is_valid;
     
     if (src->finish_reason_present) {
-        strncpy(dst->finish_reason, src->finish_reason, sizeof(dst->finish_reason) - 1);
+        memcpy(dst->finish_reason, src->finish_reason, sizeof(dst->finish_reason));
         dst->finish_reason[sizeof(dst->finish_reason) - 1] = '\0';
     }
     
@@ -200,7 +202,7 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
     cJSON *finish_reason = cJSON_GetObjectItem(choice0, "finish_reason");
     if (cJSON_IsString(finish_reason)) {
         chunk->finish_reason_present = 1;
-        strncpy(chunk->finish_reason, finish_reason->valuestring, sizeof(chunk->finish_reason) - 1);
+        memcpy(chunk->finish_reason, finish_reason->valuestring, sizeof(chunk->finish_reason));
         chunk->finish_reason[sizeof(chunk->finish_reason) - 1] = '\0';
     }
     
@@ -422,7 +424,6 @@ int extract_next_chunk(stream_buffer_t *buf, StreamChunk *chunk) {
     if (strncmp(buf->data, "data: ", 6) == 0) {
         /* Try to find the end of this data line/event */
         size_t line_end = 6;
-        int multi_line = 0;
         
         /* First try: look for newline */
         while (line_end < buf->len && buf->data[line_end] != '\n' && 
@@ -511,7 +512,7 @@ int extract_next_chunk(stream_buffer_t *buf, StreamChunk *chunk) {
                 /* Validate the JSON */
                 ssize_t valid_json_len = find_json_end(json_str, json_len_calc);
                 
-                if (valid_json_len > 0 && (size_t)valid_json_len == (ssize_t)json_len_calc) {
+                if (valid_json_len > 0 && (size_t)valid_json_len == json_len_calc) {
                     /* Valid complete JSON */
                     int ret = stream_chunk_parse(json_str, chunk);
                     free(json_str);

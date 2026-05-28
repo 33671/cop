@@ -226,11 +226,10 @@ static void sanitize_truncate_output(char **out_p,
     sanitize_utf8((uint8_t *)raw, strlen(raw));
 
     /* Allocate enough for max_total output + truncation markers.
-       raw_len may be much smaller than max_total (e.g. short input
+       The raw input may be much smaller than max_total (e.g. short input
        with many tiny lines that get expanded by [truncated] tags). */
     char *clean = malloc((size_t)max_total + 256);
     if (!clean) return;
-    size_t raw_len = strlen(raw);
 
     size_t written = 0;
     char *p   = raw;
@@ -647,7 +646,6 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
 
     /* Generate diff for preview and result */
     char *diff_out = diff_text(buf, nread, new_content, new_size, 3);
-    size_t diff_len = diff_out ? strlen(diff_out) : 0;
 
     /* Preview: show file path, replace mode, and diff */
     printf("\n  [tool] editing: %s\n", abs_path);
