@@ -82,6 +82,12 @@ static void reset_assistant(LlmParser *p)
     p->assistant.last_status = LLM_PARSER_IDLE;
 }
 
+void llm_parser_trim(LlmParser *p)
+{
+    if (!p) return;
+    arena_trim(&p->arena);
+}
+
 
 /* Finalize the current assistant message and append to history */
 static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)

@@ -12,6 +12,7 @@
 
 #include "cJSON.h"
 #include "arena.h"
+#include "cjson_arena.h"
 
 static Arena cjson_arena = {0};
 
@@ -28,4 +29,8 @@ void cjson_arena_init(void) {
     hooks.malloc_fn = cjson_arena_malloc;
     hooks.free_fn   = cjson_arena_free;
     cJSON_InitHooks(&hooks);
+}
+
+void cjson_arena_trim(void) {
+    arena_trim(&cjson_arena);
 }

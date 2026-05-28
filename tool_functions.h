@@ -82,6 +82,15 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args);
 cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args);
 
 /* ============================================================================
+ * Per-step Arena Trimming
+ * ============================================================================ */
+
+/* Trim unused trailing regions from the shared tool-function arena.
+ * Safe to call at step / turn boundaries after all tool calls in a
+ * step have completed (the arena was already reset by each tool). */
+void tool_arena_trim(void);
+
+/* ============================================================================
  * Tool Schema Helpers
  * ============================================================================ */
 

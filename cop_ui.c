@@ -618,7 +618,6 @@ coroutine void cop_ui_repl(llm_runtime_t *rt) {
         /* ── Commands ── */
         if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) {
             free(line);
-            printf("Goodbye!\n");
             break;
         }
         if (strcmp(line, "/sessions") == 0) {

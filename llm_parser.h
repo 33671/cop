@@ -46,6 +46,11 @@ const cJSON *llm_parser_get_history(const LlmParser *p);
 /* Reset parser to initial empty state (drops everything). */
 void llm_parser_reset(LlmParser *p);
 
+/* Trim unused trailing regions from the parser's internal arena.
+ * Safe to call at step / turn boundaries after an assistant message
+ * has been finalized (the arena was already reset by the parser). */
+void llm_parser_trim(LlmParser *p);
+
 /* Get last error string, or NULL if no error. */
 const char *llm_parser_get_error(const LlmParser *p);
 

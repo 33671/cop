@@ -4,6 +4,16 @@
 
 当前 `cjson_arena.c` 将 cJSON 的全局分配器 hook 到 arena，`cJSON_Delete`/`cJSON_free` 变成空操作，导致整个会话期间 cJSON 分配的内存只增不减。Arena (`arena.h`) 已提供 snapshot/rewind 机制，只需接入。
 
+### ✅ 已完成：per-step `arena_trim()`
+
+见 `llm_runtime.c` `llm_runtime_send()` 中的 trim 调用点。
+
+- `llm_parser_trim()` → 在每个 tool-loop step 结束后释放 parser arena 的额外 regions
+- `tool_arena_trim()` → 同理，释放 tool function 共享 arena 的额外 regions
+- `cjson_arena_trim()` → `cjson_arena.h` 已声明，`cjson_arena.c` 已实现，但暂未在 step 路径中调用（因 persistent cJSON 历史节点与临时节点混在同一 arena 中）
+
+TODO 中关于 snapshot/rewind 的规划仍然有效，`arena_trim()` 是一个更轻量的中间步骤。
+
 ### 1. 暴露 arena snapshot/rewind 接口
 
 - [ ] `cjson_arena.h`：声明 `cjson_arena_snapshot()` 和 `cjson_arena_rewind(Arena_Mark)`，外部可调用

@@ -16,6 +16,8 @@
 #include <errno.h>
 #include "sds/sds.h"
 #include "llm_runtime.h"
+#include "cjson_arena.h"
+#include "tool_functions.h"
 
 /* ============================================================================
  * Internal Structure
@@ -422,6 +424,15 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         rt->usage_seen = 0;  /* reset per-iteration usage */
         int64_t step_start = now();  /* for TPS computation */
 
+        /* ---- Trim arenas after the first step (free excess regions
+         * from the previous tool-loop iteration).  The parser's arena
+         * and tool-function arena have already been reset by their
+         * respective cleanup paths — this discards unused regions. ---- */
+        if (loop_count > 1) {
+            llm_parser_trim(rt->parser);
+            tool_arena_trim();
+        }
+
         /* Check cancellation before starting a new request */
         if (llm_runtime_is_cancelled(rt)) {
             fprintf(stderr, "\n[debug] tool loop iter=%d: cancelled at top of loop, stopping\n", loop_count);
@@ -583,6 +594,8 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             if (on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
             }
+            llm_parser_trim(rt->parser);
+            tool_arena_trim();
             return stream_error ? -1 : 0;
         }
 
@@ -631,6 +644,8 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             if (on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
             }
+            llm_parser_trim(rt->parser);
+            tool_arena_trim();
             return 0;
         }
 
@@ -651,6 +666,10 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
     if (on_chunk) {
         on_chunk(rt, LLM_RT_EVENT_DONE, NULL, NULL, user_data);
     }
+
+    /* Final trim after the entire turn completes */
+    llm_parser_trim(rt->parser);
+    tool_arena_trim();
 
     return 0;
 }

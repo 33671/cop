@@ -25,7 +25,7 @@ set(LIBMILL_SOURCES
     libmill/unix.c
     libmill/ssl.c
 )
-set(CJSON_SOURCES cjson/cJSON.c)
+set(CJSON_SOURCES cjson/cJSON.c cjson_arena.c)
 
 # SDS dynamic string library
 add_library(sds STATIC sds/sds.c)
@@ -40,7 +40,9 @@ target_include_directories(mill PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/libmill
 )
 target_include_directories(cjson PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
 target_compile_options(mill PRIVATE 
     -Wall -Wextra -g -O0
