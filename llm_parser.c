@@ -344,6 +344,19 @@ const char *llm_parser_get_error(const LlmParser *p)
 LlmParserStatus llm_parser_force_finish(LlmParser *p)
 {
     if (!p) return LLM_PARSER_ERR_ARG;
+
+    /* Clear error state if stuck — force parser back to IDLE. */
+    if (p->state == STATE_ERROR) {
+        p->state = STATE_IDLE;
+        p->error_msg[0] = '\0';
+        if (p->assistant.msg) {
+            cJSON_Delete(p->assistant.msg);
+            p->assistant.msg = NULL;
+        }
+        reset_assistant(p);
+        return LLM_PARSER_FINISHED;
+    }
+
     if (p->state != STATE_IN_ASSISTANT) return LLM_PARSER_IDLE;
 
     cJSON *msg = p->assistant.msg;

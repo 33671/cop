@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.10)
+
+# Default to Debug for development — always use -g -DDEBUG
+set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+
 project(async_c_http C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-# set(CMAKE_BUILD_TYPE Debug)
-set(CMAKE_BUILD_TYPE Release)
+add_compile_definitions(DEBUG)
 
 set(COMPILE_WARNING_CONTROL -Wall -Wextra -Werror)
 # Find required packages

@@ -747,6 +747,7 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
                 c->first_token_time = get_timestamp_ms();
             return 1;
         } else if (ret == -1) {
+            log_write(c, "extract_next_chunk returned -1 (error)");
             return -1;
         }
 
@@ -766,10 +767,13 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
                 char buf[4096];
                 ssize_t n = read(c->data_pipe[0], buf, sizeof(buf));
                 if (n > 0) {
+                    log_write(c, "read %zd bytes from pipe (buf=%zu -> %zu)",
+                             n, c->main_buffer.len, c->main_buffer.len + n);
                     stream_buffer_append(&c->main_buffer, buf, n);
                     c->total_bytes += n;
                 } else if (n == 0) {
                     /* Pipe closed — child process finished */
+                    log_write(c, "pipe EOF (child closed pipe)");
                     break;
                 } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
                     log_write(c, "read from pipe error: %s", strerror(errno));
@@ -780,7 +784,7 @@ coroutine int extract_chunk_internal(stream_client_t *c, StreamChunk *chunk, int
             /* Only break on error if no data was readable (ev has FDW_ERR
              * but not FDW_IN — a real error, not just EOF notification). */
             if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
-                log_write(c, "fdwait error (no data), forcing pipe cleanup");
+                log_write(c, "fdwait error (no data), forcing pipe cleanup (buf_len=%zu)", c->main_buffer.len);
                 fdclean(c->data_pipe[0]);
                 break;
             }

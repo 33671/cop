@@ -42,7 +42,7 @@ extern "C" {
  * Limits
  * ============================================================================ */
 #define LLM_RUNTIME_MAX_TOOLS      64
-#define LLM_RUNTIME_MAX_TOOL_LOOPS 256
+#define LLM_RUNTIME_MAX_TOOL_LOOPS 2048
 
 /* ============================================================================
  * Event Types (sent to user callback)

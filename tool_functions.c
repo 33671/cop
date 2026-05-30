@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <time.h>
 #include "sds/sds.h"
 #include "isocline/include/isocline.h"
 #include "utils_utf8.h"
@@ -294,6 +295,9 @@ cJSON *tool_sleep(llm_runtime_t *rt, const cJSON *args) {
  * Shell Tool
  * ============================================================================ */
 
+/* Unique temp-file counter — avoids collisions within the same second */
+static int g_tmp_counter = 0;
+
 cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
     cJSON *cmd_json = cJSON_GetObjectItem(args, "cmd");
     const char *cmd = (cmd_json && cJSON_IsString(cmd_json))
@@ -318,21 +322,68 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
     int exit_code = 0;
     int ret = llm_runtime_popen(rt, cmd, now() + 7200000, &output, &exit_code);
 
-    sanitize_truncate_output(&output, OUTPUT_MAX_LINE, OUTPUT_MAX_TOTAL);
+    /* If output is long, dump to a temp file instead of inlining */
+    size_t raw_len = output ? strlen(output) : 0;
+    int saved_to_file = 0;
+    char tmp_path[256];
+    long file_lines = 0;
 
-    /* Build text field */
-    
+    if (raw_len > OUTPUT_MAX_TOTAL) {
+        /* Generate unique temp path */
+        int n = g_tmp_counter++;
+        snprintf(tmp_path, sizeof(tmp_path),
+                 "/tmp/shell_output_%d_%ld_%d", getpid(), (long)time(NULL), n);
+
+        FILE *tmpf = fopen(tmp_path, "wb");
+        if (tmpf) {
+            fwrite(output, 1, raw_len, tmpf);
+            fclose(tmpf);
+
+            /* Count lines */
+            file_lines = 1;
+            for (size_t i = 0; i < raw_len; i++) {
+                if (output[i] == '\n') file_lines++;
+            }
+            saved_to_file = 1;
+        }
+    }
+
     sds text_buf;
-    if (ret != 0) {
-        const char *reason = llm_runtime_is_cancelled(rt)
-                             ? "cancelled" : "timed out";
-        text_buf = sdscatprintf(sdsempty(&tool_arena),
-                 "Output:\n%s\nExit_code:%d\n"
-                 "[WARNING: command %s partial output above]",
-                 output ? output : "(no output)", exit_code, reason);
+    if (saved_to_file) {
+        /* Build result pointing to tmp file */
+        if (ret != 0) {
+            const char *reason = llm_runtime_is_cancelled(rt)
+                                 ? "cancelled" : "timed out";
+            text_buf = sdscatprintf(sdsempty(&tool_arena),
+                "Output saved to: %s\n"
+                "Size: %zu bytes\n"
+                "Lines: %ld\n"
+                "Exit_code: %d\n"
+                "[WARNING: command %s - partial output saved]",
+                tmp_path, raw_len, file_lines, exit_code, reason);
+        } else {
+            text_buf = sdscatprintf(sdsempty(&tool_arena),
+                "Output saved to: %s\n"
+                "Size: %zu bytes\n"
+                "Lines: %ld\n"
+                "Exit_code: %d",
+                tmp_path, raw_len, file_lines, exit_code);
+        }
     } else {
-        text_buf = sdscatprintf(sdsempty(&tool_arena), "Output:\n%s\nExit_code:%d",
-                 output ? output : "(no output)", exit_code);
+        /* Short output: sanitize and inline */
+        sanitize_truncate_output(&output, OUTPUT_MAX_LINE, OUTPUT_MAX_TOTAL);
+
+        if (ret != 0) {
+            const char *reason = llm_runtime_is_cancelled(rt)
+                                 ? "cancelled" : "timed out";
+            text_buf = sdscatprintf(sdsempty(&tool_arena),
+                     "Output:\n%s\nExit_code:%d\n"
+                     "[WARNING: command %s partial output above]",
+                     output ? output : "(no output)", exit_code, reason);
+        } else {
+            text_buf = sdscatprintf(sdsempty(&tool_arena), "Output:\n%s\nExit_code:%d",
+                     output ? output : "(no output)", exit_code);
+        }
     }
     cJSON_AddStringToObject(result, "text", text_buf);
     free(output);

@@ -211,16 +211,28 @@ int llm_runtime_add_message(llm_runtime_t *rt, const cJSON *msg) {
  * Add a tool result message to history.
  * content is the value for the "content" field — for text results it's
  * a plain string; for image_url results it should be the JSON string {"url":"..."}.
+ * Returns 0 on success, -1 on error.
  */
-static void add_tool_result_to_history(llm_runtime_t *rt,
+static int add_tool_result_to_history(llm_runtime_t *rt,
                                         const char *call_id,
                                         const char *content) {
     cJSON *tool_msg = cJSON_CreateObject();
     cJSON_AddStringToObject(tool_msg, "role", "tool");
     cJSON_AddStringToObject(tool_msg, "tool_call_id", call_id);
     cJSON_AddStringToObject(tool_msg, "content", content);
-    llm_parser_add_message(rt->parser, tool_msg);
+    LlmParserStatus st = llm_parser_add_message(rt->parser, tool_msg);
     cJSON_Delete(tool_msg);
+    if (st < 0) {
+        /* Force-finish any stuck assistant state and retry once */
+        llm_parser_force_finish(rt->parser);
+        tool_msg = cJSON_CreateObject();
+        cJSON_AddStringToObject(tool_msg, "role", "tool");
+        cJSON_AddStringToObject(tool_msg, "tool_call_id", call_id);
+        cJSON_AddStringToObject(tool_msg, "content", content);
+        st = llm_parser_add_message(rt->parser, tool_msg);
+        cJSON_Delete(tool_msg);
+    }
+    return (st < 0) ? -1 : 0;
 }
 
 /* ============================================================================
@@ -242,6 +254,7 @@ static int execute_tool_calls(llm_runtime_t *rt,
 
     int tc_count = cJSON_GetArraySize(tool_calls_json);
     int executed = 0;
+    debug_log("[debug] execute_tool_calls: %d total tool calls\n", tc_count);
 
     for (int i = 0; i < tc_count; i++) {
         cJSON *tc      = cJSON_GetArrayItem(tool_calls_json, i);
@@ -258,6 +271,7 @@ static int execute_tool_calls(llm_runtime_t *rt,
                            ? name_item->valuestring : "unknown";
         const char *args_str = (args_item && cJSON_IsString(args_item))
                                ? args_item->valuestring : "{}";
+        debug_log("[debug]   tool[%d/%d]: %s id=%s\n", i+1, tc_count, name, call_id);
 
         /* ---- Cancellation check before each tool ---- */
         if (llm_runtime_is_cancelled(rt)) {
@@ -405,6 +419,8 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
                                 void *user_data) {
     if (!rt) return -1;
 
+    debug_log("\n[debug] ===== llm_runtime_send ENTER =====\n");
+
     /* Reset cancellation flag for this new turn */
     rt->running = 1;
     rt->has_error = 0;
@@ -412,12 +428,23 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
 
     /* ---- Step 1: Add user message to history if provided ---- */
     if (user_text) {
+        debug_log("[debug] Step 1: adding user message: \"%.60s\"\n", user_text);
         cJSON *msg = cJSON_CreateObject();
         cJSON_AddStringToObject(msg, "role", "user");
         cJSON_AddStringToObject(msg, "content", user_text);
         LlmParserStatus st = llm_parser_add_message(rt->parser, msg);
+        if (st < 0) {
+            /* If previous assistant stream wasn't properly finished
+             * (e.g. Ctrl+C during streaming), force-finish and retry. */
+            debug_log("[debug] Step 1: add_message failed (st=%d err=%s), calling force_finish+retry\n",
+                     st, llm_parser_get_error(rt->parser) ? llm_parser_get_error(rt->parser) : "?");
+            llm_parser_force_finish(rt->parser);
+            st = llm_parser_add_message(rt->parser, msg);
+            debug_log("[debug] Step 1: retry after force_finish → st=%d\n", st);
+        }
         cJSON_Delete(msg);
         if (st < 0) {
+            debug_log("[debug] add_message FAILED after force_finish retry, returning -1\n");
             printf("\nllm_parser_add_message error:%s\n",llm_parser_get_error(rt->parser));
             set_error(rt, "llm_parser_add_message failed");
             return -1;
@@ -428,6 +455,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
     int loop_count = 0;
     while (loop_count < LLM_RUNTIME_MAX_TOOL_LOOPS) {
         loop_count++;
+        debug_log("\n[debug] === tool loop iteration %d/%d ===\n", loop_count, LLM_RUNTIME_MAX_TOOL_LOOPS);
         rt->usage_seen = 0;  /* reset per-iteration usage */
         int64_t step_start = now();  /* for TPS computation */
 
@@ -455,12 +483,16 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         const cJSON *history  = llm_parser_get_history(rt->parser);
         cJSON       *messages = cJSON_GetObjectItem(history, "messages");
         if (!messages) {
+            debug_log("[debug] history missing 'messages' array, returning -1\n");
             set_error(rt, "parser history missing 'messages' array");
             return -1;
         }
 
         /* ---- Step 3: Start the HTTP streaming request ---- */
+        debug_log("[debug] Step 3: stream_client_start_chat (msgs=%d)\n",
+                 messages ? cJSON_GetArraySize(messages) : 0);
         if (stream_client_start_chat(rt->client, messages) != 0) {
+            debug_log("[debug] stream_client_start_chat FAILED, returning -1\n");
             set_error(rt, "stream_client_start_chat failed");
 
             /*
@@ -485,11 +517,15 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         LlmParserStatus last_status   = LLM_PARSER_IDLE;
         int             saw_tool_calls = 0;
         int             stream_was_cancelled = 0;
+        int             chunk_count = 0;
 
         StreamChunk chunk;
+        debug_log("[debug] Step 4: entering chunk loop\n");
         while (next_chunk(rt->client, &chunk)) {
+            chunk_count++;
             /* Check cancellation mid-stream */
             if (llm_runtime_is_cancelled(rt)) {
+                debug_log("[debug] Step 4: cancelled during streaming (chunk %d)\n", chunk_count);
                 stream_client_cancel(rt->client);
                 stream_chunk_cleanup(&chunk);
                 stream_was_cancelled = 1;
@@ -502,6 +538,8 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             if (status < 0) {
                 /* Parser error */
                 const char *err = llm_parser_get_error(rt->parser);
+                debug_log("[debug] Step 4: PARSER ERROR at chunk %d: st=%d err=%s\n",
+                         chunk_count, status, err ? err : "?");
                 set_error(rt, "parser error: %s", err ? err : "unknown");
                 if (on_chunk) {
                     on_chunk(rt, LLM_RT_EVENT_ERROR, rt->error_msg,
@@ -566,21 +604,35 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             stream_chunk_cleanup(&chunk);
         }
 
+        debug_log("[debug] Step 4: chunk loop exited. chunk_count=%d saw_tool_calls=%d cancelled=%d\n",
+                 chunk_count, saw_tool_calls, stream_was_cancelled);
+
         /* ---- Step 5: Wait for curl thread to finish ---- */
         stream_client_wait_done(rt->client);
+        debug_log("[debug] Step 5: stream_client_wait_done done, client_state=%s\n",
+                 stream_client_get_state_string(rt->client));
 
         /*
-         * Force-finish partial assistant message if the stream ended
-         * abnormally (cancellation, mid-stream network error, etc.).
-         * Accumulated content/reasoning is preserved; incomplete tool
-         * calls are discarded.
+         * Always force-finish after streaming ends, regardless of how
+         * the loop exited (normal completion, parser error, or network
+         * error).  This guarantees the parser returns to IDLE so
+         * subsequent llm_runtime_send() calls can add messages.
+         */
+        debug_log("[debug] calling llm_parser_force_finish (err=%s)\n",
+                 llm_parser_get_error(rt->parser) ? llm_parser_get_error(rt->parser) : "none");
+        llm_parser_force_finish(rt->parser);
+        debug_log("[debug] after force_finish (err=%s)\n",
+                 llm_parser_get_error(rt->parser) ? llm_parser_get_error(rt->parser) : "none");
+
+        /*
+         * Check whether the stream ended abnormally
+         * (cancellation, mid-stream network error, etc.).
          */
         int stream_error = (stream_client_get_state(rt->client) == CLIENT_STATE_ERROR
                             && !stream_was_cancelled && !llm_runtime_is_cancelled(rt));
         if (stream_was_cancelled || llm_runtime_is_cancelled(rt) || stream_error) {
             debug_log("\n[debug] tool loop iter=%d: stream ended abnormally (cancelled=%d runtime_cancelled=%d stream_error=%d)\n",
                     loop_count, stream_was_cancelled, llm_runtime_is_cancelled(rt), stream_error);
-            llm_parser_force_finish(rt->parser);
 
             if (stream_error) {
                 /* Genuine mid-stream error (not user cancellation).
@@ -632,6 +684,8 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         }
 
         /* ---- Step 7: Notify tool calls and execute them ---- */
+        debug_log("[debug] Step 7: about to execute %d tool call(s)\n",
+                 cJSON_GetArraySize(tool_calls_json));
         if (on_chunk) {
             on_chunk(rt, LLM_RT_EVENT_TOOL_CALLS, NULL,
                      tool_calls_json, user_data);
@@ -641,6 +695,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
                                           on_chunk, user_data);
         debug_log("\n[debug] tool loop iter=%d: executed %d tool(s)\n", loop_count, executed);
         if (executed < 0) {
+            debug_log("[debug] execute_tool_calls FAILED (executed=%d), returning -1\n", executed);
             set_error(rt, "tool execution failed");
             return -1;
         }
@@ -662,9 +717,11 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
         }
 
         /* ---- Step 8: loop back to send another request ---- */
+        debug_log("[debug] tool loop iter=%d: looping back for next API request\n", loop_count);
     }
 
     /* ---- Step 9: Notify completion ---- */
+    debug_log("\n[debug] tool loop: turn complete after %d iteration(s)\n", loop_count);
     if (loop_count >= LLM_RUNTIME_MAX_TOOL_LOOPS) {
         printf("\n\033[1;33m[tool loop limit] %d iterations reached, ending turn. "
                "Continue in next message.\033[0m\n", LLM_RUNTIME_MAX_TOOL_LOOPS);
@@ -675,6 +732,7 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
     }
 
     /* Final trim after the entire turn completes */
+    debug_log("[debug] ===== llm_runtime_send EXIT (ret=0) =====\n");
     llm_parser_trim(rt->parser);
     tool_arena_trim();
 
