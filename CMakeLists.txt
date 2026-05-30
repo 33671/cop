@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Default to Debug for development — always use -g -DDEBUG
-set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+#set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 
 project(async_c_http C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-add_compile_definitions(DEBUG)
+#add_compile_definitions(DEBUG)
 
 set(COMPILE_WARNING_CONTROL -Wall -Wextra -Werror)
 # Find required packages
@@ -29,6 +29,8 @@ set(LIBMILL_SOURCES
     libmill/udp.c
     libmill/unix.c
     libmill/ssl.c
+    libmill/tcp.c
+    libmill/dns/dns.c
 )
 set(CJSON_SOURCES cjson/cJSON.c cjson_arena.c)
 
@@ -41,22 +43,22 @@ target_include_directories(sds PUBLIC
 # Add libmill library
 add_library(mill STATIC ${LIBMILL_SOURCES})
 add_library(cjson STATIC ${CJSON_SOURCES})
-target_include_directories(mill PUBLIC 
+target_include_directories(mill PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/libmill
 )
-target_include_directories(cjson PUBLIC 
+target_include_directories(cjson PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
     ${CMAKE_CURRENT_SOURCE_DIR}/sds
 )
-target_compile_options(mill PRIVATE 
+target_compile_options(mill PRIVATE
     -Wall -Wextra -g -O0
     # Disable stack protection flags that conflict with libmill's stack switching
     #-fno-stack-protector -fno-stack-clash-protection -fcf-protection=none
-    -fno-stack-clash-protection 
+    -fno-stack-clash-protection
 )
 
-target_compile_options(cjson PRIVATE 
+target_compile_options(cjson PRIVATE
     -Wall -Wextra -g -O0
 )
 # Check for epoll or kqueue
@@ -82,7 +84,7 @@ endif()
 add_library(openai_sse_parser STATIC
     openai_sse_parser.c
 )
-target_link_libraries(openai_sse_parser 
+target_link_libraries(openai_sse_parser
     cjson
     sds
 )
@@ -103,7 +105,7 @@ add_library(tool_call_parser STATIC
     tool_call_parser.c
 )
 target_compile_options(tool_call_parser PRIVATE ${COMPILE_WARNING_CONTROL})
-target_link_libraries(tool_call_parser 
+target_link_libraries(tool_call_parser
     cjson
     sds
 )
@@ -115,7 +117,7 @@ target_include_directories(tool_call_parser PUBLIC
 
 add_library(llm_parser STATIC llm_parser.c)
 target_compile_options(llm_parser PRIVATE ${COMPILE_WARNING_CONTROL})
-target_link_libraries(llm_parser 
+target_link_libraries(llm_parser
     cjson
     openai_sse_parser
     tool_call_parser
@@ -158,7 +160,7 @@ add_executable(openai_stream_client_async openai_stream_client_async_test.c util
 # Disable stack protection flags that conflict with libmill's stack switching
 target_compile_options(openai_stream_client_async PRIVATE
     #-fno-stack-protector -fno-stack-clash-protection -fcf-protection=none
-    -fno-stack-clash-protection 
+    -fno-stack-clash-protection
 )
 target_link_libraries(openai_stream_client_async
     llm_runtime
@@ -237,6 +239,15 @@ target_include_directories(tool_functions PUBLIC
 
 # cop — main agent executable
 add_executable(cop cop.c cop_ui.c)
+
+# cop_tcp — TCP test executable
+add_executable(cop_tcp cop_tcp.c)
+target_compile_options(cop_tcp PRIVATE
+    -fno-stack-clash-protection
+)
+target_link_libraries(cop_tcp
+    mill
+)
 target_compile_options(cop PRIVATE
     ${COMPILE_WARNING_CONTROL}
     -fno-stack-clash-protection

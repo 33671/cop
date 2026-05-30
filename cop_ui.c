@@ -700,7 +700,7 @@ void cop_ui_banner(const char *model, const char *endpoint,
     printf("CWD:      %s\n", cwd);
     if (g_rt && llm_runtime_is_yolo(g_rt))
         printf("Mode:     YOLO — auto-approving all tool calls\n");
-    printf("Input:    Enter=submit, Shift+Enter/Ctrl+J=newline\n");
+    printf("Input:    Enter=newline, Alt+Enter/Ctrl+T=submit\n");
     printf("Commands: /model, /set_model <id>, /sessions, /load, /delete, /export\n");
 }
 

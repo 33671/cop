@@ -818,7 +818,9 @@ void tool_functions_add_read_schema(cJSON *schemas) {
         "configuration files, logs, or any text file. "
         "Maximum returned size is 100 KB. No approval needed. "
         "Before reading, use shell 'pwd' to confirm the current workspace "
-        "directory so you can construct correct relative paths.");
+        "directory so you can construct correct relative paths. "
+        "The user may also use @ prefix + filename to refer to files under the "
+        "current working directory.");
     cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");

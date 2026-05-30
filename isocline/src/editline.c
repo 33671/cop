@@ -921,8 +921,8 @@ static char* edit_line( ic_env_t* env, const char* prompt_text )
     }
 
     // Operations that may return
-    if (c == WITH_ALT(KEY_ENTER)) {
-      // Alt+Enter submits
+    if (c == WITH_ALT(KEY_ENTER) || c == KEY_CTRL_T) {
+      // Alt+Enter or Ctrl+T submits
       break;
     }
     else if (c == KEY_ENTER) {
@@ -1072,9 +1072,10 @@ static char* edit_line( ic_env_t* env, const char* prompt_text )
       case KEY_CTRL_K:
         edit_delete_to_end_of_line(env,&eb);
         break;
-      case KEY_CTRL_T:
-        edit_swap_char(env,&eb);
-        break;
+      // KEY_CTRL_T is now used for submit (see above)
+      //case KEY_CTRL_T:
+      //  edit_swap_char(env,&eb);
+      //  break;
 
       // Editing
       case KEY_SHIFT_TAB:

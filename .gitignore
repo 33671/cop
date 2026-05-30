@@ -14,3 +14,4 @@ trash/
 *.log
 *.json
 .vscode
+*.gz
