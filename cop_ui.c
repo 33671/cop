@@ -709,10 +709,10 @@ void cop_ui_sigint(int sig, siginfo_t *info, void *uap) {
     if (g_rt && !llm_runtime_is_cancelled(g_rt)) {
         debug_log("\n[debug] SIGINT: cancelling runtime\n");
         llm_runtime_cancel(g_rt);
-        write(STDOUT_FILENO, "\n[Cancelling...]\n", 17);
-    } else {
+        (void)write(STDOUT_FILENO, "\n[Cancelling...]\n", 17);
+    } else if (!g_want_exit) {
         debug_log("\n[debug] SIGINT: already cancelled, exiting\n");
-        write(STDOUT_FILENO, "\n[Exiting...]\n", 14);
-        _exit(0);
+        (void)write(STDOUT_FILENO, "\n[Exiting...]\n", 14);
+        g_want_exit = 1;
     }
 }

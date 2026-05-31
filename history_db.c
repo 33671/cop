@@ -157,6 +157,10 @@ int history_db_open(history_db_t **db_out) {
 void history_db_close(history_db_t *db) {
     if (!db) return;
     if (db->conn) {
+        /* Commit any pending transaction */
+        sqlite3_exec(db->conn, "COMMIT", NULL, NULL, NULL);
+        /* Checkpoint WAL into main database for durability */
+        sqlite3_exec(db->conn, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
         sqlite3_close(db->conn);
         db->conn = NULL;
     }
@@ -326,10 +330,7 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
         return -1;
     }
 
-    /* Wrap in transaction */
-    exec_sql(db->conn, "BEGIN TRANSACTION");
-
-    int ok = 1;
+    /* Auto-commit mode: each INSERT is committed immediately */
     for (int i = *saved_count; i < total; i++) {
         cJSON *msg = cJSON_GetArrayItem(messages, i);
         if (!msg) continue;
@@ -360,24 +361,17 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
         if (sqlite3_step(stmt) != SQLITE_DONE) {
             fprintf(stderr, "[history_db] save_step insert: %s\n",
                     sqlite3_errmsg(db->conn));
-            ok = 0;
+            sqlite3_finalize(stmt);
             free(tool_calls_str);
-            break;
+            return -1;
         }
 
         free(tool_calls_str);
     }
 
     sqlite3_finalize(stmt);
-
-    if (ok) {
-        exec_sql(db->conn, "COMMIT");
-        *saved_count = total;
-        return 0;
-    } else {
-        exec_sql(db->conn, "ROLLBACK");
-        return -1;
-    }
+    *saved_count = total;
+    return 0;
 }
 
 /* ============================================================================

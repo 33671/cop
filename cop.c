@@ -25,12 +25,13 @@
 /* ============================================================================
  * Global State (shared with cop_ui.c)
  * ============================================================================ */
-llm_runtime_t    *g_rt = NULL;
-history_db_t     *g_db = NULL;
-int64_t           g_session_id = -1;
-int               g_saved_count = 0;
-char              g_cwd[4096];
-model_entry_t   **g_models = NULL;
+llm_runtime_t        *g_rt = NULL;
+history_db_t         *g_db = NULL;
+int64_t               g_session_id = -1;
+int                   g_saved_count = 0;
+char                  g_cwd[4096];
+model_entry_t       **g_models = NULL;
+volatile sig_atomic_t g_want_exit = 0;
 
 /* ============================================================================
  * Main
@@ -40,7 +41,8 @@ int main(int argc, char *argv[]) {
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = cop_ui_sigint;
     sa.sa_flags = SA_SIGINFO;
-    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
 
     /* Load model config from ~/.cop/models.json */
     g_models = models_config_load();
@@ -133,9 +135,13 @@ int main(int argc, char *argv[]) {
     /* Launch REPL */
     go(cop_ui_repl(rt));
 
-    msleep(-1);
+    /* Sleep until SIGINT/SIGTERM requests exit */
+    while (!g_want_exit) {
+        msleep(250);
+    }
 
-    /* Not reached */
+    /* Clean up */
+    history_db_close(g_db);
     llm_runtime_free(rt);
     curl_global_cleanup();
     return 0;

@@ -20,12 +20,13 @@ extern "C" {
 /* ============================================================================
  * Globals (owned by cop.c, accessible from cop_ui.c)
  * ============================================================================ */
-extern llm_runtime_t   *g_rt;
-extern history_db_t    *g_db;
-extern int64_t          g_session_id;
-extern int              g_saved_count;
-extern char             g_cwd[4096];
-extern model_entry_t  **g_models;
+extern llm_runtime_t        *g_rt;
+extern history_db_t         *g_db;
+extern int64_t               g_session_id;
+extern int                   g_saved_count;
+extern char                  g_cwd[4096];
+extern model_entry_t       **g_models;
+extern volatile sig_atomic_t g_want_exit;
 
 /* ============================================================================
  * UI Lifecycle
