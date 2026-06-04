@@ -395,6 +395,9 @@ static void emit_text(mdrenderer_ctx *c, const char *text, MD_SIZE size) {
     out_raw(c, text, size);
 }
 
+/* ── forward declaration for terminal height query ─────────── */
+static int md_get_terminal_height(void);
+
 /* ════════════════════════════════════════════════════════════════
  * Table rendering helpers
  * ════════════════════════════════════════════════════════════════ */
@@ -802,6 +805,36 @@ static int leave_block_cb(MD_BLOCKTYPE type, void *detail, void *userdata) {
         tbl_wrap_cells(c, ncols, colw);
         tbl_row_lines(c, row_lines);
         int header_rows = tbl_count_headers(c);
+
+        /* ── If table height exceeds 80% of terminal height,
+         *     expand columns to full terminal width to reduce
+         *     vertical wrapping and keep the table from growing
+         *     beyond the terminal scrollback. ── */
+        int term_h = md_get_terminal_height();
+        if (term_h > 0 && c->max_width > 0) {
+            int total_height = 0;
+            for (int ri = 0; ri < c->tbl_nrow; ri++)
+                total_height += row_lines[ri];
+            /* borders: top (1) + separator lines (nrows-1) + bottom (1) */
+            total_height += c->tbl_nrow + 1;
+
+            if (total_height > term_h * 80 / 100) {
+                /* Recalculate column widths using full available width.
+                 * Distribute evenly among columns. */
+                int borders = ncols + 1;
+                int avail = c->max_width - borders;
+                int base = avail / ncols;
+                int rem  = avail % ncols;
+                for (int i = 0; i < ncols; i++) {
+                    colw[i] = base + (i < rem ? 1 : 0);
+                    if (colw[i] < MIN_COL_WIDTH) colw[i] = MIN_COL_WIDTH;
+                }
+                /* Re-wrap cells and recompute row heights */
+                tbl_wrap_cells(c, ncols, colw);
+                tbl_row_lines(c, row_lines);
+            }
+        }
+
         tbl_render(c, ncols, colw, row_lines, header_rows);
         tbl_free_cells(c);
 
@@ -1067,8 +1100,6 @@ int line_eq(const sds_line *a, const sds_line *b) {
     return a->len == b->len && memcmp(a->start, b->start, a->len) == 0;
 }
 
-/* Get terminal width from TIOCGWINSZ, or fall back to 80.
- * Tries stdout first, falls back to stdin/stderr. */
 int md_get_terminal_width(void) {
     struct winsize ws;
     int fds[] = {STDOUT_FILENO, STDIN_FILENO, STDERR_FILENO};
@@ -1077,6 +1108,17 @@ int md_get_terminal_width(void) {
             return (int)ws.ws_col;
     }
     return 80;
+}
+
+/* Get terminal height (number of rows) from TIOCGWINSZ, or fall back to 24. */
+static int md_get_terminal_height(void) {
+    struct winsize ws;
+    int fds[] = {STDOUT_FILENO, STDIN_FILENO, STDERR_FILENO};
+    for (int i = 0; i < 3; i++) {
+        if (ioctl(fds[i], TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
+            return (int)ws.ws_row;
+    }
+    return 24;
 }
 
 /* ════════════════════════════════════════════════════════════════

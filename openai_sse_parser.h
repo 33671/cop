@@ -90,12 +90,6 @@ void stream_buffer_consume(stream_buffer_t *buf, size_t len);
  */
 ssize_t find_json_end(const char *str, size_t len);
 
-/*
- * Check if a string is valid complete JSON.
- * Returns 1 if valid, 0 otherwise.
- */
-int is_valid_json(const char *str, size_t len);
-
 /* ============================================================================
  * StreamChunk Parsing
  * ============================================================================ */
@@ -111,26 +105,6 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk);
  * Free all memory allocated inside a StreamChunk.
  */
 void stream_chunk_cleanup(StreamChunk *chunk);
-
-/*
- * Deep copy a StreamChunk.
- * Returns 0 on success, -1 on error.
- * Caller must call stream_chunk_cleanup() on the destination.
- */
-int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src);
-
-/* ============================================================================
- * SSE Event Extraction
- * ============================================================================ */
-
-/*
- * Extract a complete SSE event from the buffer.
- * SSE events are separated by double newlines (\n\n or \r\n\r\n).
- * Returns a newly allocated string containing the event content (after "data: "),
- * or NULL if no complete event is available.
- * The caller must free the returned string.
- */
-char *extract_sse_event(stream_buffer_t *buf);
 
 /*
  * Extract a complete JSON object from the buffer.

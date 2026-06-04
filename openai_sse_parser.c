@@ -99,11 +99,6 @@ ssize_t find_json_end(const char *str, size_t len) {
     return -1;  /* Invalid or incomplete JSON */
 }
 
-int is_valid_json(const char *str, size_t len) {
-    ssize_t result = find_json_end(str, len);
-    return (result > 0 && (size_t)result <= len);
-}
-
 /* ============================================================================
  * StreamChunk Helper Functions
  * ============================================================================ */
@@ -126,36 +121,6 @@ void stream_chunk_cleanup(StreamChunk *chunk) {
     if (chunk->tool_calls) cJSON_Delete(chunk->tool_calls);
     arena_free(&chunk->arena);
     memset(chunk, 0, sizeof(StreamChunk));
-}
-
-int stream_chunk_copy(StreamChunk *dst, const StreamChunk *src) {
-    if (!dst || !src) return -1;
-    
-    /* Init dst arena fresh (will be freed by stream_chunk_cleanup) */
-    memset(dst, 0, sizeof(StreamChunk));
-    
-    dst->created = src->created;
-    dst->finish_reason_present = src->finish_reason_present;
-    dst->usage_present = src->usage_present;
-    dst->prompt_tokens = src->prompt_tokens;
-    dst->completion_tokens = src->completion_tokens;
-    dst->total_tokens = src->total_tokens;
-    dst->cached_tokens = src->cached_tokens;
-    dst->is_done = src->is_done;
-    dst->is_valid = src->is_valid;
-    
-    if (src->finish_reason_present) {
-        memcpy(dst->finish_reason, src->finish_reason, sizeof(dst->finish_reason));
-        dst->finish_reason[sizeof(dst->finish_reason) - 1] = '\0';
-    }
-    
-    if (src->id) dst->id = sdsdupTo(&dst->arena, src->id);
-    if (src->role) dst->role = src->role;
-    if (src->content) dst->content = sdsdupTo(&dst->arena, src->content);
-    if (src->reasoning_content) dst->reasoning_content = sdsdupTo(&dst->arena, src->reasoning_content);
-    if (src->tool_calls) dst->tool_calls = cJSON_Duplicate(src->tool_calls, 1);
-    
-    return 0;
 }
 
 /* ============================================================================
@@ -279,65 +244,6 @@ check_usage:
 /* ============================================================================
  * SSE Event Extraction
  * ============================================================================ */
-char *extract_sse_event(stream_buffer_t *buf) {
-    /* Look for double newline as SSE event separator */
-    size_t sep_pos = 0;
-    int found_sep = 0;
-    int sep_len = 0;
-    
-    for (size_t i = 0; i + 1 < buf->len; i++) {
-        if (buf->data[i] == '\n' && buf->data[i + 1] == '\n') {
-            sep_pos = i;
-            found_sep = 1;
-            sep_len = 2;
-            break;
-        }
-        if (i + 3 < buf->len && 
-            buf->data[i] == '\r' && buf->data[i + 1] == '\n' &&
-            buf->data[i + 2] == '\r' && buf->data[i + 3] == '\n') {
-            sep_pos = i;
-            found_sep = 1;
-            sep_len = 4;
-            break;
-        }
-    }
-    
-    if (!found_sep) {
-        return NULL;  /* No complete event yet */
-    }
-    
-    /* Calculate event length */
-    size_t event_len = sep_pos;
-    
-    /* Skip leading whitespace/newlines */
-    size_t start = 0;
-    while (start < event_len && (buf->data[start] == '\n' || buf->data[start] == '\r' ||
-                                  buf->data[start] == ' ' || buf->data[start] == '\t')) {
-        start++;
-    }
-    
-    /* Skip "data: " prefix if present */
-    if (start + 6 <= event_len && strncmp(buf->data + start, "data: ", 6) == 0) {
-        start += 6;
-    }
-    
-    /* Allocate and copy the event data */
-    size_t content_len = event_len > start ? event_len - start : 0;
-    
-    char *event = malloc(content_len + 1);
-    if (!event) return NULL;
-    
-    if (content_len > 0) {
-        memcpy(event, buf->data + start, content_len);
-    }
-    event[content_len] = '\0';
-    
-    /* Consume the event from buffer (including separator) */
-    stream_buffer_consume(buf, sep_pos + sep_len);
-    
-    return event;
-}
-
 char *extract_valid_json(stream_buffer_t *buf) {
     /* Skip leading whitespace */
     size_t start = 0;
