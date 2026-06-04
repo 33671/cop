@@ -940,11 +940,14 @@ static char* edit_line( ic_env_t* env, const char* prompt_text )
     else if (c == KEY_EVENT_STOP) {
       break; // STOP event quits with NULL
     }
-    else if (c == KEY_ESC) {
-      if (eb.pos == 0 && editor_pos_is_at_end(&eb)) break;  // ESC on empty input returns with empty input
-      edit_delete_all(env,&eb);      // otherwise delete the current input
-      // edit_delete_line(env,&eb);  // otherwise delete the current line
-    }
+      else if (c == KEY_ESC) {
+        if (eb.pos == 0 && editor_pos_is_at_end(&eb)) {
+          env->interrupted = true;     /* ESC on empty = user wants to cancel */
+          break;
+        }
+        edit_delete_all(env,&eb);      /* otherwise delete the current input */
+        // edit_delete_line(env,&eb);  /* otherwise delete the current line */
+      }
     else if (c == KEY_BELL /* ^G */ || c == KEY_CTRL_C) {
       edit_delete_all(env,&eb);
       env->interrupted = true;
