@@ -182,10 +182,12 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
     }
     chunk->content = safe_get_string(&chunk->arena, delta, "content");
     
-    /* Reasoning content */
+    /* Reasoning content — support multiple field names used by different APIs */
     cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
     if (!cJSON_IsString(reasoning))
         reasoning = cJSON_GetObjectItem(delta, "thinking");
+    if (!cJSON_IsString(reasoning))
+        reasoning = cJSON_GetObjectItem(delta, "reasoning");
     if (cJSON_IsString(reasoning))
         chunk->reasoning_content = sdsnew(&chunk->arena, reasoning->valuestring);
     

@@ -650,6 +650,7 @@ static int enter_block_cb(MD_BLOCKTYPE type, void *detail, void *userdata) {
 
     case MD_BLOCK_CODE: {
         MD_BLOCK_CODE_DETAIL *d = (MD_BLOCK_CODE_DETAIL *)detail;
+        handle_bol_prefix(c);
         c->in_code_block = 1;
         c->code_is_fenced = (d->fence_char != 0);
         out_str(c, c->code_is_fenced ? "```" : "code");
@@ -758,10 +759,11 @@ static int leave_block_cb(MD_BLOCKTYPE type, void *detail, void *userdata) {
 
     case MD_BLOCK_CODE:
         out_str(c, ANSI_RESET);
+        c->in_code_block = 0;
+        handle_bol_prefix(c);
         if (c->code_is_fenced)
             out_str(c, "```");
         out_char(c, '\n');
-        c->in_code_block = 0;
         c->code_is_fenced = 0;
         c->bol = 1;
         break;
