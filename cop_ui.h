@@ -27,6 +27,7 @@ extern int                   g_saved_count;
 extern char                  g_cwd[4096];
 extern model_entry_t       **g_models;
 extern volatile sig_atomic_t g_want_exit;
+extern volatile pid_t        g_running_child_pid;
 
 /* ============================================================================
  * UI Lifecycle

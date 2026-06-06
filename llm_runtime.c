@@ -26,6 +26,11 @@
 #define debug_log(...)  ((void)0)
 #endif
 
+/* Global: PID of currently running shell child process (for signal handler).
+ * Set by llm_runtime_popen() before entering the read loop; cleared on exit.
+ * Exposed via cop_ui.h so the signal handler in cop_ui.c can kill the child. */
+volatile pid_t g_running_child_pid = -1;
+
 /* ============================================================================
  * Internal Structure
  * ============================================================================ */
@@ -760,6 +765,11 @@ void llm_runtime_cancel(llm_runtime_t *rt) {
     stream_client_cancel(rt->client);
 }
 
+void llm_runtime_mark_cancelled(llm_runtime_t *rt) {
+    if (!rt) return;
+    rt->running = 0;
+}
+
 const char *llm_runtime_get_error(const llm_runtime_t *rt) {
     if (!rt || !rt->has_error) return NULL;
     return rt->error_msg;
@@ -822,7 +832,16 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
         /* ================================================================
          * CHILD: redirect stdout+stderr → pipe, exec /bin/sh -c <cmd>
          * ================================================================ */
-        close(pipefd[0]);                      /* close read end */
+        setsid();                                /* new session: detach from controlling tty,
+                                                   also isolates process group */
+        /* Redirect stdin from /dev/null to prevent terminal programs
+         * (vim, less, etc.) from writing escape sequences to the tty. */
+        int nullfd = open("/dev/null", O_RDONLY);
+        if (nullfd >= 0) {
+            dup2(nullfd, STDIN_FILENO);
+            close(nullfd);
+        }
+        close(pipefd[0]);                        /* close read end */
         dup2(pipefd[1], STDOUT_FILENO);        /* stdout → pipe write */
         dup2(pipefd[1], STDERR_FILENO);        /* stderr → pipe write */
         close(pipefd[1]);                      /* close original write fd */
@@ -842,6 +861,8 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
     int flags = fcntl(pipefd[0], F_GETFL, 0);
     fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
 
+    g_running_child_pid = pid;   /* expose for signal handler */
+
     size_t   out_cap  = 4096;
     size_t   out_len  = 0;
     char    *out_buf  = malloc(out_cap);
@@ -849,8 +870,10 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
 
     if (!out_buf) {
         kill(pid, SIGKILL);
+        fdclean(pipefd[0]);
         close(pipefd[0]);
         waitpid(pid, NULL, 0);
+        g_running_child_pid = -1;
         return -1;
     }
     out_buf[0] = '\0';
@@ -898,9 +921,11 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
                     char *tmp = realloc(out_buf, new_cap);
                     if (!tmp) {
                         kill(pid, SIGKILL);
+                        fdclean(pipefd[0]);
                         close(pipefd[0]);
                         free(out_buf);
                         waitpid(pid, NULL, 0);
+                        g_running_child_pid = -1;
                         return -1;
                     }
                     out_buf = tmp;
@@ -928,7 +953,7 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
                     size_t new_cap = out_cap * 2;
                     while (new_cap < out_len + n + 1) new_cap *= 2;
                     char *tmp = realloc(out_buf, new_cap);
-                    if (!tmp) { kill(pid, SIGKILL); close(pipefd[0]); free(out_buf); waitpid(pid, NULL, 0); return -1; }
+                    if (!tmp) { kill(pid, SIGKILL); fdclean(pipefd[0]); close(pipefd[0]); free(out_buf); waitpid(pid, NULL, 0); g_running_child_pid = -1; return -1; }
                     out_buf = tmp; out_cap = new_cap;
                 }
                 memcpy(out_buf + out_len, buf, n);
@@ -951,9 +976,10 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
     int status = 0;
     waitpid(pid, &status, 0);
 
-    /* Clean up pipe */
+    /* Clean up pipe and clear child PID */
     fdclean(pipefd[0]);
     close(pipefd[0]);
+    g_running_child_pid = -1;
 
     /* Strip trailing newline if present */
     if (out_len > 0 && out_buf[out_len - 1] == '\n') {

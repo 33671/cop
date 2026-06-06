@@ -143,7 +143,7 @@ static void on_runtime_event(llm_runtime_t *rt,
 
     case LLM_RT_EVENT_STATUS_CHANGE:
         if (text && strcmp(text, "LLM_WRITING_TOOL_CALL") == 0) {
-            if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
+            if (cb_in_responding) { cb_in_responding = 0; }
             if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
             const char *pv = NULL;
             if (data) {
@@ -181,8 +181,7 @@ static void on_runtime_event(llm_runtime_t *rt,
         printf("\r\033[K");  /* erase in-progress preview */
         fflush(stdout);
         if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
-        if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
-        printf("\n");
+        if (cb_in_responding) { cb_in_responding = 0; }
         if (data && cJSON_IsArray(data)) {
             int n = cJSON_GetArraySize(data);
             for (int i = 0; i < n; i++) {
@@ -706,12 +705,22 @@ void cop_ui_banner(const char *model, const char *endpoint,
 
 void cop_ui_sigint(int sig, siginfo_t *info, void *uap) {
     (void)sig; (void)info; (void)uap;
+    /*
+     * This function runs in signal context.  ONLY async-signal-safe
+     * operations are permitted (write, kill, volatile read/write).
+     *
+     * First Ctrl+C  → cancel the current turn & kill shell child
+     * Second Ctrl+C → request clean exit from the main loop
+     */
     if (g_rt && !llm_runtime_is_cancelled(g_rt)) {
-        debug_log("\n[debug] SIGINT: cancelling runtime\n");
-        llm_runtime_cancel(g_rt);
+        /* Signal-safe: mark runtime cancelled (volatile int only, no IO/locks) */
+        llm_runtime_mark_cancelled(g_rt);
+        /* Kill running shell child process immediately */
+        if (g_running_child_pid > 0) {
+            kill(g_running_child_pid, SIGKILL);
+        }
         (void)write(STDOUT_FILENO, "\n[Cancelling...]\n", 17);
     } else if (!g_want_exit) {
-        debug_log("\n[debug] SIGINT: already cancelled, exiting\n");
         (void)write(STDOUT_FILENO, "\n[Exiting...]\n", 14);
         g_want_exit = 1;
     }

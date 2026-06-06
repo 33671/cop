@@ -137,7 +137,7 @@ int main(int argc, char *argv[]) {
 
     /* Sleep until SIGINT/SIGTERM requests exit */
     while (!g_want_exit) {
-        msleep(250);
+        msleep(now() + 250);
     }
 
     /* Clean up */

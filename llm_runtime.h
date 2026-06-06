@@ -222,6 +222,13 @@ void llm_runtime_reset(llm_runtime_t *rt);
 /* Cancel any ongoing streaming request. */
 void llm_runtime_cancel(llm_runtime_t *rt);
 
+/*
+ * Signal-safe cancellation: atomically set the cancelled flag to 0.
+ * Only touches a volatile int — no locks, no IO, no heap.
+ * Safe to call from signal handlers. Does NOT kill child processes.
+ */
+void llm_runtime_mark_cancelled(llm_runtime_t *rt);
+
 /* Check if cancellation was requested. Useful in long-running tool functions. */
 int llm_runtime_is_cancelled(const llm_runtime_t *rt);
 
