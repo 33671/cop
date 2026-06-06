@@ -2,7 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <errno.h>
 #include <curl/curl.h>
+
+#include "utils.h"
 
 /* Load .env file into environment variables */
 void load_env_file(const char *path) {
@@ -47,4 +50,35 @@ void load_env_file(const char *path) {
     }
     
     fclose(fp);
+}
+
+/*
+ * Read from a non-blocking pipe fd and accumulate into a dynamically growing
+ * buffer.  Shared by llm_runtime_popen() and extract_chunk_internal().
+ *
+ * Returns: >0 = bytes read, 0 = EOF, -1 = EAGAIN, -2 = fatal error.
+ */
+ssize_t pipe_drain(int fd, char **buf, size_t *len, size_t *cap) {
+    char tmp[4096];
+    ssize_t n = read(fd, tmp, sizeof(tmp));
+
+    if (n > 0) {
+        /* Grow buffer if needed */
+        if (*len + n + 1 > *cap) {
+            size_t nc = *cap * 2;
+            while (nc < *len + n + 1) nc *= 2;
+            char *nb = realloc(*buf, nc);
+            if (!nb) return -2;
+            *buf = nb;
+            *cap = nc;
+        }
+        memcpy(*buf + *len, tmp, n);
+        *len += n;
+        (*buf)[*len] = '\0';
+        return n;
+    }
+
+    if (n == 0) return 0;   /* EOF */
+
+    return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
 }

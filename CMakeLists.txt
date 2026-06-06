@@ -238,7 +238,7 @@ target_include_directories(tool_functions PUBLIC
 )
 
 # cop — main agent executable
-add_executable(cop cop.c cop_ui.c)
+add_executable(cop cop.c cop_ui.c utils.c)
 
 # cop_tcp — TCP test executable
 add_executable(cop_tcp cop_tcp.c)

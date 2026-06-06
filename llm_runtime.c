@@ -18,6 +18,7 @@
 #include "llm_runtime.h"
 #include "cjson_arena.h"
 #include "tool_functions.h"
+#include "utils.h"
 
 /* [debug] log — compiled out unless -DDEBUG is set */
 #ifdef DEBUG
@@ -868,14 +869,7 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
     char    *out_buf  = malloc(out_cap);
     int      finished = 0;
 
-    if (!out_buf) {
-        kill(pid, SIGKILL);
-        fdclean(pipefd[0]);
-        close(pipefd[0]);
-        waitpid(pid, NULL, 0);
-        g_running_child_pid = -1;
-        return -1;
-    }
+    if (!out_buf) goto cleanup_error;
     out_buf[0] = '\0';
 
     /*
@@ -909,61 +903,21 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
         if (deadline >= 0 && now() >= deadline) {
             break;
         }
-        /* Drain data first (FDW_ERR may accompany FDW_IN on EOF) */
+        /* Drain data from pipe (FDW_ERR may accompany FDW_IN on EOF) */
         if (ev & FDW_IN) {
-            char buf[4096];
-            ssize_t n = read(pipefd[0], buf, sizeof(buf));
-            if (n > 0) {
-                /* Grow output buffer if needed */
-                if (out_len + n + 1 > out_cap) {
-                    size_t new_cap = out_cap * 2;
-                    while (new_cap < out_len + n + 1) new_cap *= 2;
-                    char *tmp = realloc(out_buf, new_cap);
-                    if (!tmp) {
-                        kill(pid, SIGKILL);
-                        fdclean(pipefd[0]);
-                        close(pipefd[0]);
-                        free(out_buf);
-                        waitpid(pid, NULL, 0);
-                        g_running_child_pid = -1;
-                        return -1;
-                    }
-                    out_buf = tmp;
-                    out_cap = new_cap;
-                }
-                memcpy(out_buf + out_len, buf, n);
-                out_len += n;
-                out_buf[out_len] = '\0';
-            } else if (n == 0) {
-                /* Pipe closed — child finished */
-                finished = 1;
-            } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                break;
-            }
+            ssize_t r = pipe_drain(pipefd[0], &out_buf, &out_len, &out_cap);
+            if (r == 0) { finished = 1; }
+            else if (r == -2) goto cleanup_error;
+            /* r>0 (data) or r==-1 (EAGAIN): continue */
         }
 
         /* FDW_ERR without FDW_IN: child may have exited and closed the pipe.
-         * Try reading one more time — read() returns 0 for EOF. */
+         * Try one more read — read() returns 0 for EOF. */
         if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
-            char buf[4096];
-            ssize_t n = read(pipefd[0], buf, sizeof(buf));
-            if (n > 0) {
-                /* Data was available after all — accumulate it */
-                if (out_len + n + 1 > out_cap) {
-                    size_t new_cap = out_cap * 2;
-                    while (new_cap < out_len + n + 1) new_cap *= 2;
-                    char *tmp = realloc(out_buf, new_cap);
-                    if (!tmp) { kill(pid, SIGKILL); fdclean(pipefd[0]); close(pipefd[0]); free(out_buf); waitpid(pid, NULL, 0); g_running_child_pid = -1; return -1; }
-                    out_buf = tmp; out_cap = new_cap;
-                }
-                memcpy(out_buf + out_len, buf, n);
-                out_len += n;
-                out_buf[out_len] = '\0';
-            } else if (n == 0) {
-                finished = 1;
-            } else {
-                break;  /* real read error */
-            }
+            ssize_t r = pipe_drain(pipefd[0], &out_buf, &out_len, &out_cap);
+            if (r == 0) { finished = 1; }
+            else if (r == -2) goto cleanup_error;
+            else if (r == -1) break;  /* no data on hangup → stop */
         }
     }
 
@@ -990,4 +944,15 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
     *output    = out_buf;
     *exit_code = finished && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return finished ? 0 : -1;
+
+cleanup_error:
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+    fdclean(pipefd[0]);
+    close(pipefd[0]);
+    free(out_buf);  /* NULL-safe */
+    g_running_child_pid = -1;
+    *output = NULL;
+    *exit_code = -1;
+    return -1;
 }
