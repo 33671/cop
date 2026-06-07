@@ -235,14 +235,10 @@ LlmParserStatus llm_parser_feed_chunk(LlmParser *p, const StreamChunk *chunk)
 
     /* ------------------------------------------------------------------
      *  Role start (new assistant message)
+     *  Only start a new message if not already in one. Some APIs (e.g.
+     *  step-3.7-flash) redundantly emit role in every chunk — skip them.
      * ------------------------------------------------------------------ */
-    if (chunk->role == ROLE_ASSISTANT) {
-        if (p->state == STATE_IN_ASSISTANT) {
-            /* Robustness: previous stream didn't finish; force-close it */
-            if (finish_assistant(p,chunk) != 0) {
-                return LLM_PARSER_ERR_OOM;
-            }
-        }
+    if (chunk->role == ROLE_ASSISTANT && p->state != STATE_IN_ASSISTANT) {
         p->state = STATE_IN_ASSISTANT;
         p->assistant.msg = cJSON_CreateObject();
         cJSON_AddStringToObject(p->assistant.msg, "role", "assistant");

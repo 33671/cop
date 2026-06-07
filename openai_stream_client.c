@@ -488,6 +488,7 @@ coroutine int stream_client_start_chat(stream_client_t *c, cJSON *messages) {
         headers = curl_slist_append(headers, auth);
         headers = curl_slist_append(headers, "Content-Type: application/json");
         headers = curl_slist_append(headers, "Accept: application/json");
+        headers = curl_slist_append(headers, "User-Agent: cop");
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
         /* ── Fork ──────────────────────────────────────────────── */

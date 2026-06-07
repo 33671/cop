@@ -579,13 +579,13 @@ coroutine int llm_runtime_send(llm_runtime_t *rt,
             }
 
             /* Notify reasoning content */
-            if (chunk.reasoning_content && on_chunk) {
+            if (chunk.reasoning_content && chunk.reasoning_content[0] && on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_REASONING,
                          chunk.reasoning_content, NULL, user_data);
             }
 
             /* Notify text content */
-            if (chunk.content && on_chunk) {
+            if (chunk.content && chunk.content[0] && on_chunk) {
                 on_chunk(rt, LLM_RT_EVENT_CONTENT,
                          chunk.content, NULL, user_data);
             }

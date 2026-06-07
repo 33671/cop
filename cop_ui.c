@@ -128,7 +128,9 @@ static void on_runtime_event(llm_runtime_t *rt,
 
     case LLM_RT_EVENT_CONTENT:
         if (!cb_in_responding) {
-            if (cb_in_reasoning) { printf("\n"); cb_in_reasoning = 0; }
+            if (cb_in_reasoning) { 
+                printf("\n"); cb_in_reasoning = 0; 
+            }
             cb_in_responding = 1;
             /* Start a fresh markdown renderer for this response */
             if (!g_content_display_inited) {
