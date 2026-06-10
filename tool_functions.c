@@ -155,19 +155,28 @@ static const char *get_path_arg(const cJSON *args, cJSON *result) {
     return (path && *path) ? path : NULL;
 }
 
-/* Create parent directories for a given fs path. */
+/* Create parent directories for a given file path.
+ * Only the directory portion (up to the last '/') is created;
+ * the final path component (the filename) is left untouched. */
 static int mkdir_p(const char *path) {
     if (!path || path[0] == '\0') return -1;
 
-    size_t len = strlen(path);
-    char *tmp = malloc(len + 1);
+    /* Find the last '/' — everything after it is the filename */
+    const char *last_slash = strrchr(path, '/');
+    if (!last_slash || last_slash == path) {
+        /* No directory component (e.g. "file.txt" or "/file.txt") */
+        return 0;
+    }
+
+    size_t dir_len = (size_t)(last_slash - path);
+    char *tmp = malloc(dir_len + 1);
     if (!tmp) return -1;
-    memcpy(tmp, path, len + 1);
+    memcpy(tmp, path, dir_len);
+    tmp[dir_len] = '\0';
 
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-            /* Ignore EEXIST (already exists), but report other errors */
             if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
                 int saved_errno = errno;
                 free(tmp);
@@ -178,7 +187,7 @@ static int mkdir_p(const char *path) {
         }
     }
 
-    /* Create the final directory level */
+    /* Create the final (deepest) directory */
     if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
         int saved_errno = errno;
         free(tmp);
@@ -293,7 +302,7 @@ cJSON *tool_sleep(llm_runtime_t *rt, const cJSON *args) {
     cJSON *s = cJSON_GetObjectItem(args, "secs");
     if (s && cJSON_IsNumber(s)) secs = s->valuedouble;
 
-    printf("\n  [tool] sleeping for %.1f seconds...\n", secs);
+    printf("  [tool] sleeping for %.1f seconds...\n", secs);
 
     const double step = 0.1;
     double slept = 0;
@@ -329,7 +338,7 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
         return result;
     }
 
-    printf("\n  [tool] proposed command: %s\n", cmd);
+    printf("  [tool] proposed command: %s\n", cmd);
     if (!check_approval(rt, result,
             "[yellow][b]Run this command? y/N[/] ",
             "user denied shell execution"))
@@ -431,7 +440,7 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args) {
         limit = (v >= 1) ? ((v <= 1000) ? v : 1000) : 1;
     }
 
-    printf("\n  [tool] reading: %s (offset=%d, limit=%d)\n", path, offset, limit);
+    printf("  [tool] reading: %s (offset=%d, limit=%d)\n", path, offset, limit);
 
     
     sds abs_path = resolve_abs_path(&tool_arena, path);
@@ -563,10 +572,10 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
     }
 
     /* Preview */
-    printf("\n  [tool] %s to: %s (%zu bytes)\n",
+    printf("  [tool] %s to: %s (%zu bytes)\n",
            strcmp(mode, "append") == 0 ? "append" : "write",
            abs_path, content_len);
-    printf("\n  [preview first 500 chars]\n");
+    printf("  [preview first 500 chars]\n");
     size_t pv = content_len < 500 ? content_len : 500;
     printf("%.*s", (int)pv, content);
     if (content_len > pv) printf("\n  ... [%zu more bytes]", content_len - pv);
@@ -725,7 +734,7 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     char *diff_out = diff_text(buf, nread, new_content, new_size, 3);
 
     /* Preview: show file path, replace mode, and diff */
-    printf("\n  [tool] editing: %s\n", abs_path);
+    printf("  [tool] editing: %s\n", abs_path);
     printf("  [%s]\n", replace_all
            ? "replacing ALL occurrences" : "replacing first occurrence only");
     if (diff_out) {

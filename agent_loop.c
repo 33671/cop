@@ -193,12 +193,12 @@ static int execute_tool_calls(llm_runtime_t *rt,
                 preview_text = preview_item->valuestring;
             }
 
-            /* Truncate to first 200 chars / first 3 lines */
-            char preview[256];
+            /* Truncate to first 500 chars / first 10 lines */
+            char preview[640];
             size_t plen = strlen(preview_text);
             int lines = 0;
             size_t e = 0;
-            for (size_t i = 0; i < plen && i < 200 && lines < 3; i++) {
+            for (size_t i = 0; i < plen && i < 500 && lines < 10; i++) {
                 preview[e++] = preview_text[i];
                 if (preview_text[i] == '\n') lines++;
             }

@@ -186,23 +186,20 @@ static void on_runtime_event(llm_runtime_t *rt,
             const char *name_str = (nm && cJSON_IsString(nm)) ? nm->valuestring : "?";
             const char *preview  = (pv && cJSON_IsString(pv)) ? pv->valuestring : "";
 
-            const char *first_nl = strchr(preview, '\n');
-            if (first_nl && *(first_nl + 1)) {
-                printf("  \033[32m-> %s\033[0m \033[90m%.*s\033[0m\n",
-                       name_str, (int)(first_nl - preview), preview);
-                const char *rest = first_nl + 1;
-                while (*rest) {
-                    const char *next = strchr(rest, '\n');
-                    if (next) {
-                        printf("     \033[90m%.*s\033[0m\n", (int)(next - rest), rest);
-                        rest = next + 1;
+            /* Print tool name, then preview text on its own indented line(s) */
+            printf("  \033[32m-> %s\033[0m\n", name_str);
+            if (preview[0]) {
+                const char *p = preview;
+                while (*p) {
+                    const char *nl = strchr(p, '\n');
+                    if (nl) {
+                        printf("     \033[90m%.*s\033[0m\n", (int)(nl - p), p);
+                        p = nl + 1;
                     } else {
-                        printf("     \033[90m%s\033[0m\n", rest);
+                        printf("     \033[90m%s\033[0m\n", p);
                         break;
                     }
                 }
-            } else {
-                printf("  \033[32m-> %s\033[0m \033[90m%s\033[0m\n", name_str, preview);
             }
         }
         break;
