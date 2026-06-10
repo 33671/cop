@@ -223,6 +223,14 @@ void llm_runtime_reset(llm_runtime_t *rt);
 void llm_runtime_cancel(llm_runtime_t *rt);
 
 /*
+ * Set a pointer to a volatile pid_t that llm_runtime_popen() will update
+ * while a child process is running.  The pointer is read/written in the
+ * parent process; the signal handler reads it to know which child to kill.
+ * Pass NULL to clear.
+ */
+void llm_runtime_set_child_pid_ptr(llm_runtime_t *rt, volatile pid_t *pid_ptr);
+
+/*
  * Signal-safe cancellation: atomically set the cancelled flag to 0.
  * Only touches a volatile int — no locks, no IO, no heap.
  * Safe to call from signal handlers. Does NOT kill child processes.

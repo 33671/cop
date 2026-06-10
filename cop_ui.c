@@ -9,6 +9,7 @@
 #include "isocline/include/isocline.h"
 #include "cjson/cJSON.h"
 #include "stream_md_renderer.h"
+#include "debug.h"
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -17,14 +18,6 @@
 #include <time.h>
 #include <string.h>
 #include <unistd.h>
-#include <dirent.h>
-
-/* [debug] log — compiled out unless -DDEBUG is set */
-#ifdef DEBUG
-#define debug_log(...)  fprintf(stderr, __VA_ARGS__)
-#else
-#define debug_log(...)  ((void)0)
-#endif
 
 /* ============================================================================
  * Tab Completion: /slash commands and @filenames
@@ -37,46 +30,17 @@ static const char *slash_commands[] = {
     "/delete ",
     "/delete all",
     "/export",
+    "/resume",
     NULL
 };
 
+/* Completion callback for /slash commands only. */
 static void slash_completer(ic_completion_env_t *cenv, const char *prefix) {
     if (!prefix) return;
-
-    /* /slash commands */
-    if (prefix[0] == '/') {
-        for (int i = 0; slash_commands[i]; i++) {
-            if (strncmp(slash_commands[i], prefix, strlen(prefix)) == 0) {
-                ic_add_completion(cenv, slash_commands[i]);
-            }
+    for (int i = 0; slash_commands[i]; i++) {
+        if (strncmp(slash_commands[i], prefix, strlen(prefix)) == 0) {
+            ic_add_completion(cenv, slash_commands[i]);
         }
-        return;
-    }
-
-    /* @filename completion */
-    if (prefix[0] == '@') {
-        const char *name = prefix + 1;
-        size_t nlen = strlen(name);
-
-        DIR *dir = opendir(".");
-        if (!dir) return;
-
-        struct dirent *entry;
-        while ((entry = readdir(dir)) != NULL) {
-            if (entry->d_name[0] == '.') continue;
-
-            if (nlen == 0 || strncmp(entry->d_name, name, nlen) == 0) {
-                char buf[512];
-                int is_dir = (entry->d_type == DT_DIR);
-                if (is_dir) {
-                    snprintf(buf, sizeof(buf), "@%s/", entry->d_name);
-                } else {
-                    snprintf(buf, sizeof(buf), "@%s ", entry->d_name);
-                }
-                ic_add_completion(cenv, buf);
-            }
-        }
-        closedir(dir);
     }
 }
 
@@ -86,7 +50,13 @@ static bool slash_is_word_char(const char *s, long len) {
 }
 
 static void completer_wrapper(ic_completion_env_t *cenv, const char *prefix) {
-    ic_complete_word(cenv, prefix, slash_completer, slash_is_word_char);
+    if (prefix && prefix[0] == '/') {
+        /* /slash commands */
+        ic_complete_word(cenv, prefix, slash_completer, slash_is_word_char);
+    } else {
+        /* Built-in filename completion for everything else */
+        ic_complete_filename(cenv, prefix ? prefix : "", '/', NULL, NULL);
+    }
 }
 
 /* ============================================================================
@@ -113,7 +83,7 @@ static void on_runtime_event(llm_runtime_t *rt,
                               const cJSON *data,
                               void *user_data) {
     (void)rt;
-    (void)user_data;
+    cop_context_t *ctx = (cop_context_t *)user_data;
 
     switch (event) {
 
@@ -266,14 +236,14 @@ static void on_runtime_event(llm_runtime_t *rt,
                 printf("  \033[90mtps: %.1f\033[0m", tps);
             }
             /* Context window usage */
-            {
+            if (ctx && ctx->models) {
                 const char *model_id = llm_runtime_get_model(rt);
-                const model_entry_t *entry = models_config_find(g_models, model_id);
+                const model_entry_t *entry = models_config_find(ctx->models, model_id);
                 if (entry && entry->context_window > 0) {
-                    int ctx = entry->context_window;
-                    double pct = (ctx > 0) ? (t * 100.0 / ctx) : 0;
+                    int ctxw = entry->context_window;
+                    double pct = (ctxw > 0) ? (t * 100.0 / ctxw) : 0;
                     printf("  \033[90mctx: %.1f%%/%s\033[0m",
-                           pct, fmt_tokens(ctx, to, sizeof(to)));
+                           pct, fmt_tokens(ctxw, to, sizeof(to)));
                 }
             }
             printf("\033[0m\n");
@@ -300,25 +270,25 @@ static void on_runtime_event(llm_runtime_t *rt,
 /* ============================================================================
  * History Persistence Helper
  * ============================================================================ */
-static void save_history_step(llm_runtime_t *rt) {
-    if (!g_db) return;
+static void save_history_step(cop_context_t *ctx) {
+    if (!ctx->db) return;
 
-    const cJSON *history = llm_runtime_get_history(rt);
+    const cJSON *history = llm_runtime_get_history(ctx->rt);
     if (!history) return;
 
     const cJSON *msgs = cJSON_GetObjectItem(history, "messages");
     if (!msgs || cJSON_GetArraySize(msgs) == 0) return;
 
-    if (g_session_id < 0) {
-        g_session_id = history_db_new_session(g_db, g_cwd);
-        if (g_session_id < 0) {
+    if (ctx->session_id < 0) {
+        ctx->session_id = history_db_new_session(ctx->db, ctx->cwd);
+        if (ctx->session_id < 0) {
             fprintf(stderr, "\n[history_db] failed to create session\n");
             return;
         }
-        g_saved_count = 0;
+        ctx->saved_count = 0;
     }
 
-    if (history_db_save_step(g_db, g_session_id, &g_saved_count, msgs) != 0) {
+    if (history_db_save_step(ctx->db, ctx->session_id, &ctx->saved_count, msgs) != 0) {
         fprintf(stderr, "\n[history_db] failed to save messages\n");
     }
 }
@@ -327,9 +297,8 @@ static void save_history_step(llm_runtime_t *rt) {
  * Command Handlers
  * ============================================================================ */
 
-static void cmd_sessions(llm_runtime_t *rt) {
-    (void)rt;
-    cJSON *list = history_db_list_sessions(g_db, g_cwd);
+static void cmd_sessions(cop_context_t *ctx) {
+    cJSON *list = history_db_list_sessions(ctx->db, ctx->cwd);
     if (!list) return;
 
     int n = cJSON_GetArraySize(list);
@@ -343,7 +312,7 @@ static void cmd_sessions(llm_runtime_t *rt) {
         cJSON *lum = cJSON_GetObjectItem(s, "last_user_msg");
 
         int sid_val = id ? id->valueint : 0;
-        const char *marker = (sid_val == g_session_id) ? "\033[32m*\033[0m " : "  ";
+        const char *marker = (sid_val == ctx->session_id) ? "\033[32m*\033[0m " : "  ";
 
         printf("%s%-4d  %-6d  %-19s  %s\n",
                marker, sid_val,
@@ -352,23 +321,23 @@ static void cmd_sessions(llm_runtime_t *rt) {
                lum && cJSON_IsString(lum) ? lum->valuestring
                                            : "\033[90m(empty)\033[0m");
     }
-    if (n == 0) printf("  \033[90m(no sessions for %s)\033[0m\n", g_cwd);
+    if (n == 0) printf("  \033[90m(no sessions for %s)\033[0m\n", ctx->cwd);
     printf("  \033[90m(* = current)\033[0m\n");
     cJSON_Delete(list);
 }
 
-static void cmd_load(llm_runtime_t *rt, const char *arg) {
+static void cmd_load(cop_context_t *ctx, const char *arg) {
     int64_t sid = strtoll(arg, NULL, 10);
     if (sid <= 0) return;
 
-    cJSON *msgs = history_db_load_session(g_db, sid);
+    cJSON *msgs = history_db_load_session(ctx->db, sid);
     if (!msgs || cJSON_GetArraySize(msgs) == 0) {
         printf("Session %lld not found or empty.\n", (long long)sid);
         cJSON_Delete(msgs);
         return;
     }
 
-    llm_runtime_reset(rt);
+    llm_runtime_reset(ctx->rt);
     int n = cJSON_GetArraySize(msgs);
 
     /* Print last 50 messages */
@@ -403,15 +372,12 @@ static void cmd_load(llm_runtime_t *rt, const char *arg) {
                 printf("  \033[1;32m[%d] user:\033[0m\n", i + 1);
             }
         } else if (strcmp(role, "assistant") == 0) {
-            /* Reasoning: light gray, NO truncation, no label */
             if (rc && cJSON_IsString(rc) && rc->valuestring[0]) {
                 printf("\033[90m%s\033[0m\n", rc->valuestring);
             }
-            /* Content: bold blue, NO truncation, no label */
             if (raw && raw[0]) {
                 printf("\033[1;34m%s\033[0m\n", raw);
             }
-            /* Tool calls: same format as runtime, complete display */
             if (tc && cJSON_IsArray(tc) && cJSON_GetArraySize(tc) > 0) {
                 int tcn = cJSON_GetArraySize(tc);
                 printf("\n");
@@ -435,7 +401,6 @@ static void cmd_load(llm_runtime_t *rt, const char *arg) {
                 }
             }
         } else if (strcmp(role, "tool") == 0) {
-            /* Tool result: same format as runtime, truncate to 3 lines */
             if (raw && raw[0]) {
                 const char *first_nl = strchr(raw, '\n');
                 if (first_nl && *(first_nl + 1)) {
@@ -466,7 +431,6 @@ static void cmd_load(llm_runtime_t *rt, const char *arg) {
                 printf("  \033[32m->\033[0m\n");
             }
         } else {
-            /* Unknown role — truncated */
             int show = raw ? (int)strlen(raw) : 0;
             if (show > 120) show = 120;
             printf("  \033[90m[%d] %s:\033[0m %.*s%s\n",
@@ -477,27 +441,55 @@ static void cmd_load(llm_runtime_t *rt, const char *arg) {
     printf("  \033[90m── end of history ──\033[0m\n\n");
 
     for (int i = 0; i < n; i++) {
-        llm_runtime_add_message(rt, cJSON_GetArrayItem(msgs, i));
+        llm_runtime_add_message(ctx->rt, cJSON_GetArrayItem(msgs, i));
     }
-    g_session_id = sid;
-    g_saved_count = history_db_get_saved_count(g_db, sid);
-    if (g_saved_count < 0) g_saved_count = 0;
+    ctx->session_id = sid;
+    ctx->saved_count = history_db_get_saved_count(ctx->db, sid);
+    if (ctx->saved_count < 0) ctx->saved_count = 0;
     printf("Loaded session %lld with %d messages.\n", (long long)sid, n);
     cJSON_Delete(msgs);
 }
 
-static void cmd_delete(llm_runtime_t *rt, const char *arg) {
+/*
+ * /resume — load the most recent session for the current working directory.
+ */
+static void cmd_resume(cop_context_t *ctx) {
+    cJSON *list = history_db_list_sessions(ctx->db, ctx->cwd);
+    if (!list || cJSON_GetArraySize(list) == 0) {
+        cJSON_Delete(list);
+        printf("No sessions found for %s.\n", ctx->cwd);
+        return;
+    }
+
+    /* Most recent session is first in the list */
+    cJSON *first = cJSON_GetArrayItem(list, 0);
+    cJSON *id_item = cJSON_GetObjectItem(first, "id");
+    if (!id_item) {
+        cJSON_Delete(list);
+        printf("Error: session list entry missing 'id'.\n");
+        return;
+    }
+
+    int64_t sid = (int64_t)id_item->valuedouble;
+    cJSON_Delete(list);
+
+    char sid_str[32];
+    snprintf(sid_str, sizeof(sid_str), "%lld", (long long)sid);
+    cmd_load(ctx, sid_str);
+}
+
+static void cmd_delete(cop_context_t *ctx, const char *arg) {
     if (!arg || !arg[0]) {
         printf("Usage: /delete <id> | /delete all\n");
         return;
     }
     if (strcmp(arg, "all") == 0) {
-        int n = history_db_delete_sessions_by_cwd(g_db, g_cwd);
+        int n = history_db_delete_sessions_by_cwd(ctx->db, ctx->cwd);
         if (n >= 0) {
-            g_session_id = -1;
-            g_saved_count = 0;
-            llm_runtime_reset(rt);
-            printf("Deleted %d session(s) in %s\n", n, g_cwd);
+            ctx->session_id = -1;
+            ctx->saved_count = 0;
+            llm_runtime_reset(ctx->rt);
+            printf("Deleted %d session(s) in %s\n", n, ctx->cwd);
         } else {
             printf("Failed to delete sessions.\n");
         }
@@ -507,12 +499,12 @@ static void cmd_delete(llm_runtime_t *rt, const char *arg) {
     int64_t did = strtoll(arg, NULL, 10);
     if (did <= 0) return;
 
-    if (history_db_delete_session(g_db, did) == 0) {
+    if (history_db_delete_session(ctx->db, did) == 0) {
         printf("Deleted session %lld.\n", (long long)did);
-        if (did == g_session_id) {
-            g_session_id = -1;
-            g_saved_count = 0;
-            llm_runtime_reset(rt);
+        if (did == ctx->session_id) {
+            ctx->session_id = -1;
+            ctx->saved_count = 0;
+            llm_runtime_reset(ctx->rt);
             printf("(current session was deleted, starting fresh)\n");
         }
     } else {
@@ -520,9 +512,8 @@ static void cmd_delete(llm_runtime_t *rt, const char *arg) {
     }
 }
 
-static void cmd_export(llm_runtime_t *rt) {
-    (void)rt;
-    const cJSON *history = llm_runtime_get_history(rt);
+static void cmd_export(cop_context_t *ctx) {
+    const cJSON *history = llm_runtime_get_history(ctx->rt);
     if (!history) {
         printf("No conversation to export.\n");
         return;
@@ -562,16 +553,16 @@ static void cmd_export(llm_runtime_t *rt) {
     printf("Exported %d messages → %s\n", count, fname);
 }
 
-static void cmd_model(llm_runtime_t *rt) {
-    if (!g_models) {
+static void cmd_model(cop_context_t *ctx) {
+    if (!ctx->models) {
         printf("No models loaded (check ~/.cop/models.json).\n");
         return;
     }
     printf("\n");
-    const char *current = llm_runtime_get_model(rt);
+    const char *current = llm_runtime_get_model(ctx->rt);
     const char *last_prov = NULL;
-    for (int i = 0; g_models[i]; i++) {
-        model_entry_t *m = g_models[i];
+    for (int i = 0; ctx->models[i]; i++) {
+        model_entry_t *m = ctx->models[i];
         if (!last_prov || strcmp(m->provider, last_prov) != 0) {
             printf("  \033[1;36m%s\033[0m  (%s)\n", m->provider, m->base_url);
             last_prov = m->provider;
@@ -587,8 +578,8 @@ static void cmd_model(llm_runtime_t *rt) {
     printf("\n  \033[90m* = current\033[0m\n");
 }
 
-static void cmd_set_model(llm_runtime_t *rt, const char *model_id) {
-    const model_entry_t *entry = models_config_find(g_models, model_id);
+static void cmd_set_model(cop_context_t *ctx, const char *model_id) {
+    const model_entry_t *entry = models_config_find(ctx->models, model_id);
     if (!entry) {
         printf("Model '%s' not found. Use /model to list.\n", model_id);
         return;
@@ -604,7 +595,7 @@ static void cmd_set_model(llm_runtime_t *rt, const char *model_id) {
         snprintf(endpoint, sizeof(endpoint),
                  "%s/chat/completions", base);
     }
-    llm_runtime_set_model(rt, entry->model_id, entry->api_key, endpoint);
+    llm_runtime_set_model(ctx->rt, entry->model_id, entry->api_key, endpoint);
     printf("Switched to \033[1;33m%s\033[0m (\033[36m%s\033[0m)\n",
            entry->model_id, entry->provider);
 }
@@ -613,7 +604,7 @@ static void cmd_set_model(llm_runtime_t *rt, const char *model_id) {
  * REPL
  * ============================================================================ */
 
-coroutine void cop_ui_repl(llm_runtime_t *rt) {
+coroutine void cop_ui_repl(cop_context_t *ctx) {
     while (1) {
         yield();
 
@@ -632,41 +623,45 @@ coroutine void cop_ui_repl(llm_runtime_t *rt) {
             break;
         }
         if (strcmp(line, "/sessions") == 0) {
-            cmd_sessions(rt);
+            cmd_sessions(ctx);
             free(line); continue;
         }
         if (strncmp(line, "/load ", 6) == 0) {
-            cmd_load(rt, line + 6);
+            cmd_load(ctx, line + 6);
             free(line); continue;
         }
         if (strncmp(line, "/delete ", 8) == 0) {
-            cmd_delete(rt, line + 8);
+            cmd_delete(ctx, line + 8);
             free(line); continue;
         }
         if (strcmp(line, "/model") == 0) {
-            cmd_model(rt);
+            cmd_model(ctx);
             free(line); continue;
         }
         if (strcmp(line, "/export") == 0) {
-            cmd_export(rt);
+            cmd_export(ctx);
+            free(line); continue;
+        }
+        if (strcmp(line, "/resume") == 0) {
+            cmd_resume(ctx);
             free(line); continue;
         }
         if (strncmp(line, "/set_model ", 11) == 0) {
-            cmd_set_model(rt, line + 11);
+            cmd_set_model(ctx, line + 11);
             free(line); continue;
         }
 
         /* ── Send message ── */
         fflush(stdout);
-        int ret = llm_runtime_send(rt, line, on_runtime_event, NULL);
-        if (llm_runtime_is_cancelled(rt)) {
+        int ret = llm_runtime_send(ctx->rt, line, on_runtime_event, ctx);
+        if (llm_runtime_is_cancelled(ctx->rt)) {
             printf("\n[Cancelled]\n");
         }
         if (ret != 0) {
-            const char *err = llm_runtime_get_error(rt);
+            const char *err = llm_runtime_get_error(ctx->rt);
             printf("\n\033[31mError: %s\033[0m\n", err ? err : "send failed");
         }
-        save_history_step(rt);
+        save_history_step(ctx);
 
         free(line);
         msleep(now() + 100);
@@ -680,7 +675,8 @@ coroutine void cop_ui_repl(llm_runtime_t *rt) {
  * UI Init
  * ============================================================================ */
 
-void cop_ui_init(void) {
+void cop_ui_init(cop_context_t *ctx) {
+    (void)ctx;
     ic_enable_multiline(true);
 
     /* Expand ~ for isocline history path */
@@ -693,16 +689,17 @@ void cop_ui_init(void) {
     ic_set_default_completer(completer_wrapper, NULL);
 }
 
-void cop_ui_banner(const char *model, const char *endpoint,
-                    const char *log_file, const char *cwd) {
+void cop_ui_banner(cop_context_t *ctx, const char *model,
+                    const char *endpoint, const char *log_file,
+                    const char *cwd) {
     printf("Model:    %s\n", model);
     printf("Endpoint: %s\n", endpoint);
     printf("Log:      %s\n", log_file);
     printf("CWD:      %s\n", cwd);
-    if (g_rt && llm_runtime_is_yolo(g_rt))
+    if (ctx->rt && llm_runtime_is_yolo(ctx->rt))
         printf("Mode:     YOLO — auto-approving all tool calls\n");
     printf("Input:    Enter=newline, Alt+Enter/Ctrl+T=submit\n");
-    printf("Commands: /model, /set_model <id>, /sessions, /load, /delete, /export\n");
+    printf("Commands: /model, /set_model <id>, /sessions, /load, /delete, /export, /resume\n");
 }
 
 void cop_ui_sigint(int sig, siginfo_t *info, void *uap) {
@@ -714,16 +711,16 @@ void cop_ui_sigint(int sig, siginfo_t *info, void *uap) {
      * First Ctrl+C  → cancel the current turn & kill shell child
      * Second Ctrl+C → request clean exit from the main loop
      */
-    if (g_rt && !llm_runtime_is_cancelled(g_rt)) {
+    if (g_cop_ctx && g_cop_ctx->rt && !llm_runtime_is_cancelled(g_cop_ctx->rt)) {
         /* Signal-safe: mark runtime cancelled (volatile int only, no IO/locks) */
-        llm_runtime_mark_cancelled(g_rt);
+        llm_runtime_mark_cancelled(g_cop_ctx->rt);
         /* Kill running shell child process immediately */
-        if (g_running_child_pid > 0) {
-            kill(g_running_child_pid, SIGKILL);
+        if (g_cop_ctx->running_child_pid > 0) {
+            kill(g_cop_ctx->running_child_pid, SIGKILL);
         }
         (void)write(STDOUT_FILENO, "\n[Cancelling...]\n", 17);
-    } else if (!g_want_exit) {
+    } else if (g_cop_ctx && !g_cop_ctx->want_exit) {
         (void)write(STDOUT_FILENO, "\n[Exiting...]\n", 14);
-        g_want_exit = 1;
+        g_cop_ctx->want_exit = 1;
     }
 }

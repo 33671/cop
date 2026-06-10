@@ -18,12 +18,7 @@
 #include "isocline/include/isocline.h"
 #include "utils_utf8.h"
 
-/* [debug] log — compiled out unless -DDEBUG is set */
-#ifdef DEBUG
-#define debug_log(...)  fprintf(stderr, __VA_ARGS__)
-#else
-#define debug_log(...)  ((void)0)
-#endif
+#include "debug.h"
 
 /* ============================================================================
  * Shared static arena for all tool functions (avoids malloc/free churn)
@@ -162,12 +157,36 @@ static const char *get_path_arg(const cJSON *args, cJSON *result) {
 
 /* Create parent directories for a given fs path. */
 static int mkdir_p(const char *path) {
-    if (strlen(path) >= 1024) return -1;
-    char tmp[1024];
-    snprintf(tmp, sizeof(tmp), "%s", path);
+    if (!path || path[0] == '\0') return -1;
+
+    size_t len = strlen(path);
+    char *tmp = malloc(len + 1);
+    if (!tmp) return -1;
+    memcpy(tmp, path, len + 1);
+
     for (char *p = tmp + 1; *p; p++) {
-        if (*p == '/') { *p = '\0'; mkdir(tmp, 0755); *p = '/'; }
+        if (*p == '/') {
+            *p = '\0';
+            /* Ignore EEXIST (already exists), but report other errors */
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+                int saved_errno = errno;
+                free(tmp);
+                errno = saved_errno;
+                return -1;
+            }
+            *p = '/';
+        }
     }
+
+    /* Create the final directory level */
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) {
+        int saved_errno = errno;
+        free(tmp);
+        errno = saved_errno;
+        return -1;
+    }
+
+    free(tmp);
     return 0;
 }
 
@@ -316,7 +335,7 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
             "user denied shell execution"))
         return result;
 
-    printf("  [tool] running: %s\n", cmd);
+    //printf("  [tool] running: %s\n", cmd);
 
     char *output = NULL;
     int exit_code = 0;
@@ -558,7 +577,14 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
             "user denied file write"))
         { tool_arena_cleanup(); return result; }
 
-    mkdir_p(abs_path);
+    if (mkdir_p(abs_path) != 0) {
+        sds eb = sdscatprintf(sdsempty(&tool_arena),
+            "Error creating parent directories for '%s': %s",
+            abs_path, strerror(errno));
+        cJSON_AddStringToObject(result, "text", eb);
+        tool_arena_cleanup();
+        return result;
+    }
 
     const char *fmode = (strcmp(mode, "append") == 0) ? "ab" : "wb";
     FILE *f = fopen(abs_path, fmode);
@@ -791,10 +817,9 @@ void tool_functions_add_shell_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "name", "shell");
     cJSON_AddStringToObject(func, "description",
         "Run a shell command and return its output (stdout+stderr merged). "
-        "Useful for: ls, cat, grep, find, wc, date, curl, git status, etc. "
         "Avoid commands that run forever or require interactive input. "
         "For long-running commands, use timeout prefixes like 'timeout 30s ...' "
-        "to manually control the time limit. When a command requires root privilege, don't run it yourself, ask the user to run it.");
+        "to manually control the time limit.");
     cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
@@ -816,11 +841,9 @@ void tool_functions_add_read_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "description",
         "Read the contents of a file. Use this to view source code, "
         "configuration files, logs, or any text file. "
-        "Maximum returned size is 100 KB. No approval needed. "
+        "Maximum returned size is 100 KB."
         "Before reading, use shell 'pwd' to confirm the current workspace "
-        "directory so you can construct correct relative paths. "
-        "The user may also use @ prefix + filename to refer to files under the "
-        "current working directory.");
+        "directory so you can construct correct relative paths.");
     cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
@@ -852,8 +875,7 @@ void tool_functions_add_write_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "description",
         "Write or append content to a file. Parent directories are created "
         "automatically. If mode is not specified and the file already exists, "
-        "returns an error asking for an explicit mode. "
-        "Requires user approval before writing.");
+        "returns an error asking for an explicit mode. ");
     cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
@@ -888,10 +910,9 @@ void tool_functions_add_edit_schema(cJSON *schemas) {
     cJSON *func = cJSON_AddObjectToObject(schema, "function");
     cJSON_AddStringToObject(func, "name", "edit");
     cJSON_AddStringToObject(func, "description",
-        "Replace substring(s) in a file. Reads the file, finds matches "
+        "Replace substring(s) in a file. Finds matches "
         "of 'old', replaces with 'new'. By default replaces only the first "
-        "occurrence; set replace_all=true to replace all. "
-        "Shows a diff preview and requires user approval before applying.");
+        "occurrence; set replace_all=true to replace all. ");
     cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");

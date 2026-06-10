@@ -98,6 +98,8 @@ target_include_directories(openai_sse_parser PUBLIC
 # Stream Client library (libmill + pthread + curl)
 add_library(openai_stream_client_lib STATIC
     openai_stream_client.c
+    stream_log.c
+    stream_curl.c
 )
 target_compile_options(openai_stream_client_lib PRIVATE ${COMPILE_WARNING_CONTROL})
 
@@ -128,7 +130,7 @@ target_include_directories(llm_parser PUBLIC
 )
 
 # LLM Runtime (high-level orchestration)
-add_library(llm_runtime STATIC llm_runtime.c)
+add_library(llm_runtime STATIC llm_runtime.c agent_loop.c)
 target_compile_options(llm_runtime PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(llm_runtime
     openai_stream_client_lib
