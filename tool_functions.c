@@ -149,10 +149,27 @@ static sds resolve_abs_path(Arena *a, const char *path) {
 static const char *get_path_arg(const cJSON *args, cJSON *result) {
     cJSON *p = cJSON_GetObjectItem(args, "path");
     const char *path = (p && cJSON_IsString(p)) ? p->valuestring : NULL;
-    if (!path || !*path)
+    if (!path || !*path) {
         cJSON_AddStringToObject(result, "text",
             "error: missing 'path' argument");
-    return (path && *path) ? path : NULL;
+        return NULL;
+    }
+    /* Trim leading whitespace */
+    while (*path == ' ' || *path == '\t') path++;
+    if (!*path) {
+        cJSON_AddStringToObject(result, "text",
+            "error: missing 'path' argument");
+        return NULL;
+    }
+    /* Trim trailing whitespace */
+    const char *trail = path + strlen(path);
+    while (trail > path && (trail[-1] == ' ' || trail[-1] == '\t')) trail--;
+
+    /* If no trimming was needed, return original pointer directly */
+    if (path == (p->valuestring) && *trail == '\0') return path;
+
+    /* Create trimmed copy in the tool arena */
+    return sdsnewlen(&tool_arena, path, (size_t)(trail - path));
 }
 
 /* Create parent directories for a given file path.
