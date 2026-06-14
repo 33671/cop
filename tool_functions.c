@@ -5,6 +5,7 @@
  */
 
 #include "tool_functions.h"
+#include "scroll_viewport.h"
 #include "diff.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ioctl.h>
 #include <errno.h>
 #include <time.h>
 #include "sds/sds.h"
@@ -363,17 +365,34 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
 
     //printf("  [tool] running: %s\n", cmd);
 
+    /* Create scrolling viewport for real-time streaming output */
+    scroll_viewport_t *vp = scroll_viewport_new();
+    scroll_viewport_set_style(vp, "\033[90m", "\033[0m");
+
     char *output = NULL;
     int exit_code = 0;
-    int ret = llm_runtime_popen(rt, cmd, now() + 7200000, &output, &exit_code);
+    int ret = llm_runtime_popen(rt, cmd, now() + 7200000, &output, &exit_code,
+                                 scroll_viewport_feed, vp);
+
+    /* Get output from viewport (it has the full accumulated buffer) */
+    size_t raw_len = 0;
+    char *vp_output = scroll_viewport_finish(vp, &raw_len);
+
+    /* Use viewport output if available, fall back to llm_runtime_popen's output */
+    if (vp_output && raw_len > 0) {
+        free(output);
+        output = vp_output;
+    }
+    /* else: keep 'output' as-is (viewport callback might not have been called) */
+
+    size_t out_len = output ? strlen(output) : 0;
 
     /* If output is long, dump to a temp file instead of inlining */
-    size_t raw_len = output ? strlen(output) : 0;
     int saved_to_file = 0;
     char tmp_path[256];
     long file_lines = 0;
 
-    if (raw_len > OUTPUT_MAX_TOTAL) {
+    if (out_len > OUTPUT_MAX_TOTAL) {
         /* Generate unique temp path */
         int n = g_tmp_counter++;
         snprintf(tmp_path, sizeof(tmp_path),
@@ -381,12 +400,12 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
 
         FILE *tmpf = fopen(tmp_path, "wb");
         if (tmpf) {
-            fwrite(output, 1, raw_len, tmpf);
+            fwrite(output, 1, out_len, tmpf);
             fclose(tmpf);
 
             /* Count lines */
             file_lines = 1;
-            for (size_t i = 0; i < raw_len; i++) {
+            for (size_t i = 0; i < out_len; i++) {
                 if (output[i] == '\n') file_lines++;
             }
             saved_to_file = 1;
@@ -405,14 +424,14 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
                 "Lines: %ld\n"
                 "Exit_code: %d\n"
                 "[WARNING: command %s - partial output saved]",
-                tmp_path, raw_len, file_lines, exit_code, reason);
+                tmp_path, out_len, file_lines, exit_code, reason);
         } else {
             text_buf = sdscatprintf(sdsempty(&tool_arena),
                 "Output saved to: %s\n"
                 "Size: %zu bytes\n"
                 "Lines: %ld\n"
                 "Exit_code: %d",
-                tmp_path, raw_len, file_lines, exit_code);
+                tmp_path, out_len, file_lines, exit_code);
         }
     } else {
         /* Short output: sanitize and inline */

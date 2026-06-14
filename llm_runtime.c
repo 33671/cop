@@ -231,7 +231,9 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
                                  const char *cmd,
                                  int64_t deadline,
                                  char **output,
-                                 int *exit_code)
+                                 int *exit_code,
+                                 llm_popen_output_cb_t on_output,
+                                 void *output_user_data)
 {
     if (!rt || !cmd || !output || !exit_code) return -1;
 
@@ -328,6 +330,9 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
             ssize_t r = pipe_drain(pipefd[0], &out_buf, &out_len, &out_cap);
             if (r == 0) { finished = 1; }
             else if (r == -2) goto cleanup_error;
+            if (r > 0 && on_output) {
+                on_output(out_buf + out_len - (size_t)r, (int)r, output_user_data);
+            }
             /* r>0 (data) or r==-1 (EAGAIN): continue */
         }
 
@@ -338,6 +343,9 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
             if (r == 0) { finished = 1; }
             else if (r == -2) goto cleanup_error;
             else if (r == -1) break;  /* no data on hangup → stop */
+            if (r > 0 && on_output) {
+                on_output(out_buf + out_len - (size_t)r, (int)r, output_user_data);
+            }
         }
     }
 

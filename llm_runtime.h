@@ -303,11 +303,20 @@ int64_t llm_runtime_usage_elapsed_ms(const llm_runtime_t *rt);
  *       return r;
  *   }
  */
+/*
+ * Optional callback: called with each chunk of data read from the pipe.
+ * Useful for real-time streaming of shell output to the terminal.
+ * May be NULL (no callback).
+ */
+typedef void (*llm_popen_output_cb_t)(const char *chunk, int len, void *user_data);
+
 coroutine int llm_runtime_popen(llm_runtime_t *rt,
                                  const char *cmd,
                                  int64_t deadline,
                                  char **output,
-                                 int *exit_code);
+                                 int *exit_code,
+                                 llm_popen_output_cb_t on_output,
+                                 void *output_user_data);
 
 #ifdef __cplusplus
 }

@@ -6,6 +6,7 @@
 
 #include "cop_ui.h"
 #include "tool_functions.h"
+#include "scroll_viewport.h"
 #include "isocline/include/isocline.h"
 #include "cjson/cJSON.h"
 #include "stream_md_renderer.h"
@@ -67,6 +68,18 @@ static int  cb_in_reasoning  = 0;
 static int  cb_in_responding = 0;
 static md_display_t g_content_display;  /* markdown renderer for content */
 static int g_content_display_inited = 0;
+static scroll_viewport_t *g_reasoning_vp = NULL;  /* viewport for reasoning output */
+
+/* Finish the reasoning viewport: free resources.
+ * scroll_viewport_finish() already ensures cursor is on a fresh line. */
+static void reasoning_viewport_finish(void) {
+    if (g_reasoning_vp) {
+        size_t len = 0;
+        char *buf = scroll_viewport_finish(g_reasoning_vp, &len);
+        free(buf);
+        g_reasoning_vp = NULL;
+    }
+}
 
 static const char *fmt_tokens(int n, char *buf, size_t bufsz) {
     if (n >= 1000) {
@@ -91,15 +104,19 @@ static void on_runtime_event(llm_runtime_t *rt,
         if (!cb_in_reasoning) {
             if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
             cb_in_reasoning = 1;
+            g_reasoning_vp = scroll_viewport_new_with_ratio(0.3f);
+            scroll_viewport_set_style(g_reasoning_vp, "\033[90m", "\033[0m");
         }
-        printf("\033[90m%s\033[0m", text);
-        fflush(stdout);
+        if (g_reasoning_vp && text) {
+            scroll_viewport_feed(text, (int)strlen(text), (void *)g_reasoning_vp);
+        }
         break;
 
     case LLM_RT_EVENT_CONTENT:
         if (!cb_in_responding) {
-            if (cb_in_reasoning) { 
-                printf("\n"); cb_in_reasoning = 0; 
+            if (cb_in_reasoning) {
+                reasoning_viewport_finish();
+                cb_in_reasoning = 0;
             }
             cb_in_responding = 1;
             /* Start a fresh markdown renderer for this response */
@@ -116,7 +133,7 @@ static void on_runtime_event(llm_runtime_t *rt,
     case LLM_RT_EVENT_STATUS_CHANGE:
         if (text && strcmp(text, "LLM_WRITING_TOOL_CALL") == 0) {
             if (cb_in_responding) { cb_in_responding = 0; }
-            if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
+            if (cb_in_reasoning)  { reasoning_viewport_finish(); cb_in_reasoning = 0; }
             const char *pv = NULL;
             if (data) {
                 cJSON *pj = cJSON_GetObjectItem(data, "preview");
@@ -152,7 +169,7 @@ static void on_runtime_event(llm_runtime_t *rt,
     case LLM_RT_EVENT_TOOL_CALLS:
         printf("\r\033[K");  /* erase in-progress preview */
         fflush(stdout);
-        if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
+        if (cb_in_reasoning)  { reasoning_viewport_finish(); cb_in_reasoning = 0; }
         if (cb_in_responding) { cb_in_responding = 0; }
         if (data && cJSON_IsArray(data)) {
             int n = cJSON_GetArraySize(data);
@@ -186,15 +203,23 @@ static void on_runtime_event(llm_runtime_t *rt,
             const char *name_str = (nm && cJSON_IsString(nm)) ? nm->valuestring : "?";
             const char *preview  = (pv && cJSON_IsString(pv)) ? pv->valuestring : "";
 
-            /* Print tool name, then preview text on its own indented line(s) */
+            /* Print tool name */
             printf("  \033[32m-> %s\033[0m\n", name_str);
+
             if (preview[0]) {
+                /* Saved-to-file output → show full preview.
+                 * Otherwise (short output already streamed via viewport) → show 2 lines max. */
+                int is_saved_file = (strncmp(preview, "Output saved to:", 16) == 0);
+                int max_lines = is_saved_file ? 999 : 2;
+                int line_no = 0;
+
                 const char *p = preview;
-                while (*p) {
+                while (*p && line_no < max_lines) {
                     const char *nl = strchr(p, '\n');
                     if (nl) {
                         printf("     \033[90m%.*s\033[0m\n", (int)(nl - p), p);
                         p = nl + 1;
+                        line_no++;
                     } else {
                         printf("     \033[90m%s\033[0m\n", p);
                         break;
@@ -246,11 +271,12 @@ static void on_runtime_event(llm_runtime_t *rt,
             printf("\033[0m\n");
         }
         printf("\r\033[K");  /* erase any leftover preview */
-        if (cb_in_reasoning)  { printf("\n"); cb_in_reasoning = 0; }
+        if (cb_in_reasoning)  { reasoning_viewport_finish(); cb_in_reasoning = 0; }
         if (cb_in_responding) { printf("\n"); cb_in_responding = 0; }
         break;
 
     case LLM_RT_EVENT_ERROR:
+        if (cb_in_reasoning)  { reasoning_viewport_finish(); }
         cb_in_reasoning  = 0;
         cb_in_responding = 0;
         if (g_content_display_inited)
@@ -373,7 +399,10 @@ static void cmd_load(cop_context_t *ctx, const char *arg) {
                 printf("\033[90m%s\033[0m\n", rc->valuestring);
             }
             if (raw && raw[0]) {
-                printf("\033[1;34m%s\033[0m\n", raw);
+                md_renderer_t *mr = md_renderer_new(md_get_terminal_width());
+                sds rendered = md_renderer_feed(mr, raw, (int)strlen(raw));
+                printf("%s\033[0m\n", rendered);
+                md_renderer_free(mr);
             }
             if (tc && cJSON_IsArray(tc) && cJSON_GetArraySize(tc) > 0) {
                 int tcn = cJSON_GetArraySize(tc);

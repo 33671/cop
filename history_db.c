@@ -212,7 +212,7 @@ cJSON *history_db_list_sessions(history_db_t *db, const char *cwd) {
         "    ORDER BY m3.msg_index DESC LIMIT 1) AS last_user_msg "
         "FROM sessions s "
         "WHERE s.cwd = ? "
-        "ORDER BY s.id DESC";
+        "ORDER BY (SELECT MAX(m.created_at) FROM messages m WHERE m.session_id = s.id) DESC, s.id DESC";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db->conn, sql, -1, &stmt, NULL) != SQLITE_OK) {
