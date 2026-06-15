@@ -414,6 +414,10 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
 
     sds text_buf;
     if (saved_to_file) {
+        /* Extract last 3 lines (truncated per line) for preview */
+        sds last_preview = get_last_n_lines_truncated(
+            &tool_arena, output, out_len, 3, OUTPUT_MAX_LINE);
+
         /* Build result pointing to tmp file */
         if (ret != 0) {
             const char *reason = llm_runtime_is_cancelled(rt)
@@ -423,15 +427,19 @@ cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {
                 "Size: %zu bytes\n"
                 "Lines: %ld\n"
                 "Exit_code: %d\n"
-                "[WARNING: command %s - partial output saved]",
-                tmp_path, out_len, file_lines, exit_code, reason);
+                "[WARNING: command %s - partial output saved]\n"
+                "Last 3 lines:\n%s",
+                tmp_path, out_len, file_lines, exit_code, reason,
+                last_preview);
         } else {
             text_buf = sdscatprintf(sdsempty(&tool_arena),
                 "Output saved to: %s\n"
                 "Size: %zu bytes\n"
                 "Lines: %ld\n"
-                "Exit_code: %d",
-                tmp_path, out_len, file_lines, exit_code);
+                "Exit_code: %d\n"
+                "Last 3 lines:\n%s",
+                tmp_path, out_len, file_lines, exit_code,
+                last_preview);
         }
     } else {
         /* Short output: sanitize and inline */

@@ -1,4 +1,5 @@
-#include <stdint.h>
+#include "utils_utf8.h"
+
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -376,4 +377,54 @@ int utf8_string_width(const char *s) {
         s += bytes;
     }
     return total;
+}
+
+/* ============================================================================
+ * get_last_n_lines_truncated — extract tail of a string with per-line caps
+ * ============================================================================ */
+
+sds get_last_n_lines_truncated(Arena *a, const char *data, size_t len,
+                                int n, int max_line) {
+    sds result = sdsempty(a);
+    if (!data || len == 0 || n <= 0) return result;
+
+    ssize_t pos = (ssize_t)len;
+    /* Skip a single trailing newline */
+    if (pos > 0 && data[pos - 1] == '\n') pos--;
+
+    int lines_found = 0;
+    ssize_t line_ends[64];
+    ssize_t line_starts[64];
+
+    /* Clamp n to a sane stack bound */
+    if (n > 64) n = 64;
+
+    while (pos > 0 && lines_found < n) {
+        ssize_t ln_end = pos;
+        while (pos > 0 && data[pos - 1] != '\n') pos--;
+        line_starts[lines_found] = pos;
+        line_ends[lines_found]   = ln_end;
+        lines_found++;
+        if (pos > 0) pos--; /* step over the newline */
+    }
+    /* If we hit the beginning and still have room, capture line 1 */
+    if (lines_found < n && pos == 0 && (ssize_t)len > 0
+          && data[0] != '\n') {
+        ssize_t end2 = 0;
+        while (end2 < (ssize_t)len && data[end2] != '\n') end2++;
+        line_starts[lines_found] = 0;
+        line_ends[lines_found]   = end2;
+        lines_found++;
+    }
+
+    /* Build result (collected in reverse order) */
+    for (int i = lines_found - 1; i >= 0; i--) {
+        size_t line_len = (size_t)(line_ends[i] - line_starts[i]);
+        int    trunc    = (line_len > (size_t)max_line);
+        size_t keep     = trunc ? (size_t)max_line : line_len;
+        result = sdscatlen(result, data + line_starts[i], keep);
+        if (trunc) result = sdscat(result, "[truncated]");
+        result = sdscat(result, "\n");
+    }
+    return result;
 }

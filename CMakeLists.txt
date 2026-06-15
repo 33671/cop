@@ -324,6 +324,7 @@ target_include_directories(stream_md_renderer PUBLIC
 add_executable(test_sanitize_utf8 test_sanitize_utf8.c utils_utf8.c)
 target_include_directories(test_sanitize_utf8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(test_sanitize_utf8 PRIVATE -Wall -Wextra)
+target_link_libraries(test_sanitize_utf8 sds)
 
 # Print configuration
 message(STATUS "")
