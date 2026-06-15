@@ -624,6 +624,9 @@ static void cmd_set_model(cop_context_t *ctx, const char *model_id) {
     llm_runtime_set_model(ctx->rt, entry->model_id, entry->api_key, endpoint);
     printf("Switched to \033[1;33m%s\033[0m (\033[36m%s\033[0m)\n",
            entry->model_id, entry->provider);
+
+    /* Persist model preference to ~/.cop/model_set */
+    models_config_save_model(entry->model_id);
 }
 
 /* ============================================================================

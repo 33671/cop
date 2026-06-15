@@ -167,3 +167,50 @@ int models_config_count(model_entry_t **entries) {
     while (entries[n]) n++;
     return n;
 }
+
+const model_entry_t *models_config_load_saved(model_entry_t **entries) {
+    if (!entries) return NULL;
+
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.cop/model_set", home);
+
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+
+    char model_id[256];
+    const model_entry_t *result = NULL;
+    if (fgets(model_id, sizeof(model_id), f)) {
+        /* Strip trailing newline / carriage return */
+        size_t len = strlen(model_id);
+        while (len > 0 && (model_id[len-1] == '\n' || model_id[len-1] == '\r'))
+            model_id[--len] = '\0';
+        result = models_config_find(entries, model_id);
+    }
+    fclose(f);
+    return result;
+}
+
+int models_config_save_model(const char *model_id) {
+    if (!model_id) return -1;
+
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+
+    /* Ensure ~/.cop/ exists */
+    char cop_dir[512];
+    snprintf(cop_dir, sizeof(cop_dir), "%s/.cop", home);
+    mkdir(cop_dir, 0755);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/.cop/model_set", home);
+
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+
+    fprintf(f, "%s\n", model_id);
+    fclose(f);
+    return 0;
+}
