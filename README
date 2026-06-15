@@ -1,7 +1,94 @@
-an llm agent in C
 
-build:
+`cop` is a cli agent written in C.
+
+## Build
+
+### 1. Install system dependencies
+
+```bash
+# Debian / Ubuntu
 apt install libcurl4-openssl-dev
+
+# Arch
+pacman -S curl
+```
+
+### 2. Build
+
+```bash
 mkdir build && cd build
 cmake .. && make -j$(nproc)
-./cop
+```
+
+### 3. Configure models
+
+Create `~/.cop/models.json` with your API endpoint and models:
+
+```json
+{
+  "providers": {
+    "name": {
+      "baseUrl": "https://api.deepseek.com/beta",
+      "apiKey": "sk-692afb0db0a4486aadf0873862fb4458",
+      "models": [
+        {
+          "id": "deepseek-v4-pro",
+          "contextWindow": 1000000
+        }
+      ]
+    }
+  }
+}
+
+```
+
+### 4. Run
+
+```bash
+./cop                        # interactive REPL
+./cop --yolo                 # skip confirmation prompts
+```
+
+
+## How It Works
+
+```
+User Input → REPL (isocline)
+     → LLM Runtime (agent loop)
+         → OpenAI Stream Client (libmill + curl)
+             → SSE Parser (incremental JSON)
+                 → Markdown Renderer (ANSI output)
+                     → Terminal
+```
+
+The agent loop handles tool calls: read\write\edit\shell
+
+## Project Structure
+
+```
+cop.c                    — main entry point, REPL, signal handling
+cop_ui.c/.h              — terminal UI, tab completion, output formatting
+agent_loop.c/.h          — agent loop: tool call dispatch & response handling
+llm_runtime.c/.h         — high-level LLM orchestration
+llm_parser.c/.h          — response parsing (SSE → structured content)
+openai_stream_client.c   — async streaming HTTP client (libmill)
+openai_sse_parser.c      — incremental SSE/JSON parser
+stream_md_renderer.c     — streaming Markdown → ANSI renderer
+tool_functions.c/.h      — tool implementations (read/write/shell/diff)
+tool_call_parser.c/.h    — tool-call JSON schema parsing
+history_db.c/.h          — SQLite session/message storage
+models_config.c/.h       — ~/.cop/models.json parser
+scroll_viewport.c/.h     — terminal scroll/viewport management
+diff.c/.h                — unified diff generation
+utils_utf8.c/.h          — UTF-8 sanitization and validation
+libmill/                 — coroutine library (source-amalgamated)
+cjson/                   — JSON parser (source-amalgamated)
+sds/                     — safe dynamic strings
+md4c/                    — Markdown parser (source-amalgamated)
+isocline/                — line editor (source-amalgamated)
+sqlite/                  — SQLite3 amalgamation
+```
+
+## License
+
+See `LICENSE` file.
