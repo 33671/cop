@@ -1,7 +1,0 @@
-*.o
-*.so
-parser
-*.egg-info/
-.venv/
-.envrc
-demo
