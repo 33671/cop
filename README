@@ -29,7 +29,7 @@ Create `~/.cop/models.json` with your API endpoint and models:
   "providers": {
     "name": {
       "baseUrl": "https://api.deepseek.com/beta",
-      "apiKey": "sk-692afb0db0a4486aadf0873862fb4458",
+      "apiKey": "YOUR_API_KEY",
       "models": [
         {
           "id": "deepseek-v4-pro",
@@ -49,8 +49,7 @@ Create `~/.cop/models.json` with your API endpoint and models:
 ./cop --yolo                 # skip confirmation prompts
 ```
 
-
-## How It Works
+## Structure
 
 ```
 User Input → REPL (isocline)
@@ -61,10 +60,9 @@ User Input → REPL (isocline)
                      → Terminal
 ```
 
-The agent loop handles tool calls: read\write\edit\shell
+The agent loop handles tool calls: read/write/edit/shell
 
-## Project Structure
-
+### Files
 ```
 cop.c                    — main entry point, REPL, signal handling
 cop_ui.c/.h              — terminal UI, tab completion, output formatting
@@ -74,7 +72,7 @@ llm_parser.c/.h          — response parsing (SSE → structured content)
 openai_stream_client.c   — async streaming HTTP client (libmill)
 openai_sse_parser.c      — incremental SSE/JSON parser
 stream_md_renderer.c     — streaming Markdown → ANSI renderer
-tool_functions.c/.h      — tool implementations (read/write/shell/diff)
+tool_functions.c/.h      — tool implementations (read/write/shell/edit)
 tool_call_parser.c/.h    — tool-call JSON schema parsing
 history_db.c/.h          — SQLite session/message storage
 models_config.c/.h       — ~/.cop/models.json parser
@@ -89,6 +87,16 @@ isocline/                — line editor (source-amalgamated)
 sqlite/                  — SQLite3 amalgamation
 ```
 
-## License
+## Dependencies
 
-See `LICENSE` file.
+| Library | License | Author | Repository |
+|---------|---------|--------|------------|
+| libmill | MIT | Martin Sustrik | https://github.com/sustrik/libmill |
+| cJSON | MIT | Dave Gamble | https://github.com/DaveGamble/cJSON |
+| sds | BSD 2-Clause | Salvatore Sanfilippo | https://github.com/antirez/sds |
+| md4c | MIT | Martin Mitáš | https://github.com/mity/md4c |
+| isocline | MIT | Daan Leijen | https://github.com/daanx/isocline |
+| SQLite3 | Public Domain | D. Richard Hipp | https://sqlite.org/ |
+| libcurl | MIT | Daniel Stenberg | https://curl.se/ |
+| arena | MIT | Alexey Kutepov | https://github.com/tsoding/arena |
+
