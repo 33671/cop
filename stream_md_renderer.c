@@ -1169,9 +1169,10 @@ sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
     r->raw_buf = new_buf;
     r->raw_len = new_len;
 
-    /* Determine effective width */
+    /* Determine effective width. When stdout is a tty, always poll
+     * the live terminal width so window resizes take effect immediately. */
     int w = r->max_width;
-    if (w <= 0 && isatty(fileno(stdout)))
+    if (isatty(fileno(stdout)))
         w = md_get_terminal_width();
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
 
@@ -1194,7 +1195,7 @@ sds md_renderer_feed(md_renderer_t *r, const char *text, int len) {
 sds md_renderer_output(md_renderer_t *r) {
     if (!r) return NULL;
     int w = r->max_width;
-    if (w <= 0 && isatty(fileno(stdout)))
+    if (isatty(fileno(stdout)))
         w = md_get_terminal_width();
     if (w > 0 && w < MIN_COL_WIDTH) w = MIN_COL_WIDTH;
     arena_reset(&r->arena);
