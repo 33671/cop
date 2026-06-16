@@ -298,7 +298,7 @@ static void test_e0_min_boundary(void)
 
 static void test_e0_overlong(void)
 {
-    /* E0 9F 80 — this decodes to U+07C0 which is < U+0800 → overlong. */
+    /* E0 9F 80 - this decodes to U+07C0 which is < U+0800 → overlong. */
     uint8_t in[]    = {0xE0, 0x9F, 0x80};
     uint8_t expect[]= {'?',  '?', '?'};
     check("E0 9F 80 = U+07C0 (overlong)", SB(in), SB(expect));
@@ -313,7 +313,7 @@ static void test_f0_min_boundary(void)
 
 static void test_f0_overlong(void)
 {
-    /* F0 8F 80 80 — decodes to U+F000 which is < U+10000 → overlong. */
+    /* F0 8F 80 80 - decodes to U+F000 which is < U+10000 → overlong. */
     uint8_t in[]    = {0xF0, 0x8F, 0x80, 0x80};
     uint8_t expect[]= {'?',  '?', '?', '?'};
     check("F0 8F 80 80 (overlong < U+10000)", SB(in), SB(expect));

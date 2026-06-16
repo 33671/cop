@@ -2,7 +2,7 @@
  * agent_loop.h
  *
  * Internal header for the agent turn loop implementation.
- * NOT part of the public API — do not install.
+ * NOT part of the public API - do not install.
  *
  * agent_loop_run() contains the core logic formerly in llm_runtime_send():
  * adding user messages, streaming, tool call detection and execution.
@@ -14,7 +14,7 @@
 #include "llm_runtime.h"
 
 /*
- * agent_loop_run — execute one complete agent turn.
+ * agent_loop_run - execute one complete agent turn.
  *
  * This is the implementation formerly in llm_runtime_send().
  * Called by the public llm_runtime_send() wrapper in llm_runtime.c.

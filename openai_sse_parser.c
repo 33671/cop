@@ -182,7 +182,7 @@ int stream_chunk_parse(const char *json_str, StreamChunk *chunk) {
     }
     chunk->content = safe_get_string(&chunk->arena, delta, "content");
     
-    /* Reasoning content — support multiple field names used by different APIs */
+    /* Reasoning content - support multiple field names used by different APIs */
     cJSON *reasoning = cJSON_GetObjectItem(delta, "reasoning_content");
     if (!cJSON_IsString(reasoning))
         reasoning = cJSON_GetObjectItem(delta, "thinking");
@@ -441,7 +441,7 @@ int extract_next_chunk(stream_buffer_t *buf, StreamChunk *chunk) {
                 free(json_str);
             }
             
-            /* Invalid JSON or non-JSON event — consume "data: " prefix.
+            /* Invalid JSON or non-JSON event - consume "data: " prefix.
              * Check immediately if this reveals a [DONE] marker underneath,
              * avoiding a wasted fdwait round-trip in extract_chunk_internal. */
             stream_buffer_consume(buf, 6);

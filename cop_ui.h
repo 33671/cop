@@ -36,7 +36,7 @@ typedef struct cop_context {
  * Single global pointer to the context, used ONLY by the signal handler
  * (cop_ui_sigint).  Set by main() before launching the REPL.
  *
- * Direct access to ctx fields outside of cop_ui_sigint is discouraged —
+ * Direct access to ctx fields outside of cop_ui_sigint is discouraged -
  * pass cop_context_t * explicitly instead.
  */
 extern cop_context_t *g_cop_ctx;
@@ -56,7 +56,7 @@ void cop_ui_banner(cop_context_t *ctx, const char *model,
 /* The main REPL coroutine. Call with go(cop_ui_repl(&ctx)). */
 coroutine void cop_ui_repl(cop_context_t *ctx);
 
-/* SIGINT handler — cancel current turn or exit.
+/* SIGINT handler - cancel current turn or exit.
  * Only touches volatile fields of g_cop_ctx and uses async-signal-safe
  * operations (write, kill). */
 void cop_ui_sigint(int sig, siginfo_t *info, void *uap);

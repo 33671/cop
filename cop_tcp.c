@@ -15,13 +15,13 @@ coroutine void worker(tcpsock s) {
          * tcprecv tries to fill the FULL requested buffer before returning.
          * Use a short deadline (100ms) so it returns quickly with whatever
          * data is available.  ETIMEDOUT just means "no more data right now",
-         * which is fine — we echo what we got and go back for more.
+         * which is fine - we echo what we got and go back for more.
          */
         size_t nbytes = tcprecv(s, buffer, sizeof(buffer), now() + 100);
         int recv_err = errno;
 
         if (nbytes > 0) {
-            /* We got data — echo it back */
+            /* We got data - echo it back */
             tcpsend(s, buffer, nbytes, -1);
             if (errno != 0) goto close;
             tcpflush(s, -1);
@@ -32,7 +32,7 @@ coroutine void worker(tcpsock s) {
             goto close;
         }
         else if (recv_err == ETIMEDOUT) {
-            /* No data yet — just loop and try again */
+            /* No data yet - just loop and try again */
             continue;
         }
         else {

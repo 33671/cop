@@ -265,7 +265,7 @@ coroutine static int extract_chunk_internal(stream_client_t *c, StreamChunk *chu
                     stream_buffer_append(&c->main_buffer, buf, n);
                     c->total_bytes += n;
                 } else if (n == 0) {
-                    /* Pipe closed — child process finished */
+                    /* Pipe closed - child process finished */
                     log_write(c, "pipe EOF (child closed pipe)");
                     break;
                 } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
@@ -275,7 +275,7 @@ coroutine static int extract_chunk_internal(stream_client_t *c, StreamChunk *chu
             }
 
             /* Only break on error if no data was readable (ev has FDW_ERR
-             * but not FDW_IN — a real error, not just EOF notification). */
+             * but not FDW_IN - a real error, not just EOF notification). */
             if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
                 log_write(c, "fdwait error (no data), forcing pipe cleanup (buf_len=%zu)", c->main_buffer.len);
                 fdclean(c->data_pipe[0]);

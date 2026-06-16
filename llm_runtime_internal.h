@@ -3,7 +3,7 @@
  *
  * Internal header shared between llm_runtime.c and agent_loop.c.
  * Contains the full llm_runtime struct definition and shared helpers.
- * NOT part of the public API — do not install.
+ * NOT part of the public API - do not install.
  */
 
 #ifndef LLM_RUNTIME_INTERNAL_H

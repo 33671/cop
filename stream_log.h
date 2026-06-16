@@ -2,7 +2,7 @@
  * stream_log.h
  *
  * Internal logging helpers for the stream client.
- * NOT part of the public API — do not install.
+ * NOT part of the public API - do not install.
  */
 
 #ifndef STREAM_LOG_H

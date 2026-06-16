@@ -230,7 +230,7 @@ int main(void)
 
         /* Realloc p1 (the last allocation) to a larger size */
         void *p2 = arena_realloc(&ar, p1, 64, 128);
-        /* Should return the same pointer — no copy needed */
+        /* Should return the same pointer - no copy needed */
         assert(p1 == p2);
         /* Count should increase by only the delta, not old+new */
         size_t old_words = (64  + sizeof(uintptr_t) - 1) / sizeof(uintptr_t);
@@ -242,7 +242,7 @@ int main(void)
         void *p3 = arena_alloc(&ar, 32);
         assert(p3 != NULL);
 
-        /* Realloc p2 (now NOT the last) — must alloc+copy */
+        /* Realloc p2 (now NOT the last) - must alloc+copy */
         void *p4 = arena_realloc(&ar, p2, 128, 256);
         assert(p4 != p2);   /* different pointer */
         assert(p4 != NULL);
@@ -250,12 +250,12 @@ int main(void)
         assert(memcmp(p4, p1, 64) == 0);
         printf("[PASS] arena_realloc non-last alloc+copy\n");
 
-        /* Realloc with same size — should be no-op */
+        /* Realloc with same size - should be no-op */
         void *p5 = arena_realloc(&ar, p4, 256, 256);
         assert(p5 == p4);
         printf("[PASS] arena_realloc same-size no-op\n");
 
-        /* Realloc with smaller size — should be no-op */
+        /* Realloc with smaller size - should be no-op */
         void *p6 = arena_realloc(&ar, p4, 256, 100);
         assert(p6 == p4);
         printf("[PASS] arena_realloc shrink no-op\n");
@@ -300,7 +300,7 @@ int main(void)
      *   sdshdr5: 0   sdshdr8: 2   sdshdr16: 4   sdshdr32: 8
      *
      * Each sub-test does a cross-type operation then immediately
-     * calls sdscat() which internally calls sdsGetArena() — if
+     * calls sdscat() which internally calls sdsGetArena() - if
      * _arena was written at the wrong offset, the subsequent
      * arena access will read garbage and crash or corrupt. */
     {

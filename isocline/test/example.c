@@ -91,11 +91,11 @@ static void word_completer(ic_completion_env_t* cenv, const char* word )
   }
   else if (strcmp(word, "id") == 0) {
     // replacement, display, and help
-    ic_add_completion_ex(cenv, "(x) => x",   "D — (x) => x",       "identity function in D");
-    ic_add_completion_ex(cenv, "\\x -> x",   "Haskell — \\x -> x", "identity_bot function in Haskell");
-    ic_add_completion_ex(cenv, "\\x => x",   "Idris — \\x => x",   "dependent identity function in Idris");
-    ic_add_completion_ex(cenv, "fn(x){ x }", "Koka — fn(x){ x }",  "total identity function in Koka");
-    ic_add_completion_ex(cenv, "fun x -> x", "Ocaml — fun x -> x", "identity lambda in OCaml");
+    ic_add_completion_ex(cenv, "(x) => x",   "D - (x) => x",       "identity function in D");
+    ic_add_completion_ex(cenv, "\\x -> x",   "Haskell - \\x -> x", "identity_bot function in Haskell");
+    ic_add_completion_ex(cenv, "\\x => x",   "Idris - \\x => x",   "dependent identity function in Idris");
+    ic_add_completion_ex(cenv, "fn(x){ x }", "Koka - fn(x){ x }",  "total identity function in Koka");
+    ic_add_completion_ex(cenv, "fun x -> x", "Ocaml - fun x -> x", "identity lambda in OCaml");
   }
   else if (word[0] != 0 && ic_istarts_with("hello isocline ",word)) {
     // many completions for hello isocline

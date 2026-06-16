@@ -232,7 +232,7 @@ void llm_runtime_set_child_pid_ptr(llm_runtime_t *rt, volatile pid_t *pid_ptr);
 
 /*
  * Signal-safe cancellation: atomically set the cancelled flag to 0.
- * Only touches a volatile int — no locks, no IO, no heap.
+ * Only touches a volatile int - no locks, no IO, no heap.
  * Safe to call from signal handlers. Does NOT kill child processes.
  */
 void llm_runtime_mark_cancelled(llm_runtime_t *rt);
@@ -265,7 +265,7 @@ int64_t llm_runtime_usage_elapsed_ms(const llm_runtime_t *rt);
  * ============================================================================ */
 
 /*
- * Run a shell command asynchronously — coroutine-friendly.
+ * Run a shell command asynchronously - coroutine-friendly.
  *
  * Forks a child process via mfork(), runs `cmd` via /bin/sh -c,
  * captures merged stdout+stderr into a pipe, and waits via fdwait().
@@ -283,7 +283,7 @@ int64_t llm_runtime_usage_elapsed_ms(const llm_runtime_t *rt);
  *
  * Returns 0 on success (child finished naturally), -1 on timeout / cancelled / error.
  * On timeout or cancellation the child is killed via SIGKILL.
- * Even on -1, *output holds whatever was captured so far — the caller must free it.
+ * Even on -1, *output holds whatever was captured so far - the caller must free it.
  *
  * Must be called from a libmill coroutine.
  *

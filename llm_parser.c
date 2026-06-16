@@ -100,7 +100,7 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
         return -1;
     }
 
-    /* reasoning_content (OpenAI extended field) — check first */
+    /* reasoning_content (OpenAI extended field) - check first */
     int has_reasoning = (p->assistant.reasoning_buf && sdslen(p->assistant.reasoning_buf) > 0);
     if (has_reasoning) {
         cJSON_AddStringToObject(msg, "reasoning_content", p->assistant.reasoning_buf);
@@ -128,7 +128,7 @@ static int finish_assistant(LlmParser *p, const StreamChunk* last_chunk)
 
     /* Safety net: ensure content or tool_calls is set (API requirement) */
     if (!cJSON_GetObjectItem(msg, "content") && !cJSON_GetObjectItem(msg, "tool_calls")) {
-        fprintf(stderr, "[llm_parser] WARNING: finish_assistant — neither content nor tool_calls set, adding empty string\n");
+        fprintf(stderr, "[llm_parser] WARNING: finish_assistant - neither content nor tool_calls set, adding empty string\n");
         cJSON_AddStringToObject(msg, "content", "");
     }
 
@@ -236,7 +236,7 @@ LlmParserStatus llm_parser_feed_chunk(LlmParser *p, const StreamChunk *chunk)
     /* ------------------------------------------------------------------
      *  Role start (new assistant message)
      *  Only start a new message if not already in one. Some APIs (e.g.
-     *  step-3.7-flash) redundantly emit role in every chunk — skip them.
+     *  step-3.7-flash) redundantly emit role in every chunk - skip them.
      * ------------------------------------------------------------------ */
     if (chunk->role == ROLE_ASSISTANT && p->state != STATE_IN_ASSISTANT) {
         p->state = STATE_IN_ASSISTANT;
@@ -341,7 +341,7 @@ LlmParserStatus llm_parser_force_finish(LlmParser *p)
 {
     if (!p) return LLM_PARSER_ERR_ARG;
 
-    /* Clear error state if stuck — force parser back to IDLE. */
+    /* Clear error state if stuck - force parser back to IDLE. */
     if (p->state == STATE_ERROR) {
         p->state = STATE_IDLE;
         p->error_msg[0] = '\0';
@@ -380,11 +380,11 @@ LlmParserStatus llm_parser_force_finish(LlmParser *p)
 
     /* Safety net: ensure content or tool_calls is set (API requirement) */
     if (!cJSON_GetObjectItem(msg, "content") && !cJSON_GetObjectItem(msg, "tool_calls")) {
-        fprintf(stderr, "[llm_parser] WARNING: force_finish — neither content nor tool_calls set, adding empty string\n");
+        fprintf(stderr, "[llm_parser] WARNING: force_finish - neither content nor tool_calls set, adding empty string\n");
         cJSON_AddStringToObject(msg, "content", "");
     }
 
-    /* Discard incomplete tool calls — do NOT add them */
+    /* Discard incomplete tool calls - do NOT add them */
 
     cJSON_AddItemToArray(p->messages_array, msg);
     p->assistant.msg = NULL;

@@ -1,7 +1,7 @@
 /*
  * cop.c
  *
- * cop — async AI coding agent in C.
+ * cop - async AI coding agent in C.
  * Main entry point: loads config, creates runtime, launches REPL.
  */
 
@@ -23,7 +23,7 @@
 #include "libmill/libmill.h"
 
 /* ============================================================================
- * Global context pointer — for signal handler access only
+ * Global context pointer - for signal handler access only
  * ============================================================================ */
 cop_context_t *g_cop_ctx = NULL;
 

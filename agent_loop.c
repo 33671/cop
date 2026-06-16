@@ -4,7 +4,7 @@
  * Core agent turn loop: sends messages, processes streaming responses,
  * detects and executes tool calls.  Formerly the body of llm_runtime_send().
  *
- * Internal module — not part of the public API.
+ * Internal module - not part of the public API.
  */
 
 #include "llm_runtime_internal.h"
@@ -22,7 +22,7 @@
 
 /*
  * Add a tool result message to history.
- * content is the value for the "content" field — for text results it's
+ * content is the value for the "content" field - for text results it's
  * a plain string; for image_url results it should be the JSON string {"url":"..."}.
  * Returns 0 on success, -1 on error.
  */
@@ -115,10 +115,10 @@ static int execute_tool_calls(llm_runtime_t *rt,
         cJSON *args = cJSON_Parse(args_str);
         cJSON *result;
         if (args == NULL) {
-            /* JSON parse failed — report error, don't call tool */
+            /* JSON parse failed - report error, don't call tool */
             const char *err_ptr = cJSON_GetErrorPtr();
             fprintf(stderr,
-                    "\n  \033[1;31m[error] tool '%s' — invalid JSON arguments\033[0m\n"
+                    "\n  \033[1;31m[error] tool '%s' - invalid JSON arguments\033[0m\n"
                     "  \033[90m%s\033[0m\n"
                     "  \033[90mparse error at: %s\033[0m\n\n",
                     name ? name : "?",
@@ -175,7 +175,7 @@ static int execute_tool_calls(llm_runtime_t *rt,
                 cJSON_AddStringToObject(tool_msg, "content", "{}");
             }
         } else {
-            /* Unknown format — serialize whole result as fallback */
+            /* Unknown format - serialize whole result as fallback */
             char *result_str = cJSON_PrintUnformatted(result);
             cJSON_AddStringToObject(tool_msg, "content",
                                     result_str ? result_str : "");
@@ -224,7 +224,7 @@ static int execute_tool_calls(llm_runtime_t *rt,
 }
 
 /* ============================================================================
- * Agent Loop — Main Turn Execution
+ * Agent Loop - Main Turn Execution
  * ============================================================================ */
 
 int agent_loop_run(llm_runtime_t *rt,
@@ -276,7 +276,7 @@ int agent_loop_run(llm_runtime_t *rt,
         /* ---- Trim arenas after the first step (free excess regions
          * from the previous tool-loop iteration).  The parser's arena
          * and tool-function arena have already been reset by their
-         * respective cleanup paths — this discards unused regions. ---- */
+         * respective cleanup paths - this discards unused regions. ---- */
         if (loop_count > 1) {
             llm_parser_trim(rt->parser);
             tool_arena_trim();

@@ -84,7 +84,7 @@ int history_db_delete_sessions_by_cwd(history_db_t *db, const char *cwd);
  * Save new messages from a cJSON messages array.
  *
  * Uses *saved_count to track how many messages have been stored so far
- * for this session — only messages at indices >= *saved_count are inserted.
+ * for this session - only messages at indices >= *saved_count are inserted.
  * On return, *saved_count is updated to the new total.
  *
  * The cJSON array must contain standard OpenAI-format message objects:

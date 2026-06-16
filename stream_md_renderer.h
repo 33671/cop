@@ -6,7 +6,7 @@
  * and produces ANSI-styled output for terminal display.
  *
  * Provides a high-level md_display_t that auto-manages diff-based
- * in-place terminal updates — ideal for AI chat streaming UIs.
+ * in-place terminal updates - ideal for AI chat streaming UIs.
  */
 
 #ifndef STREAM_MD_RENDERER_H

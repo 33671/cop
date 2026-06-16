@@ -51,11 +51,11 @@ void tool_arena_trim(void) {
 #define OUTPUT_MAX_TOTAL     8000           /* overall char limit            */
 
 /* ============================================================================
- * Shared Helpers — cJSON result construction
+ * Shared Helpers - cJSON result construction
  * ============================================================================ */
 
 /* Create a standard {"type":"text", "text":<msg>} result object.
- * Never returns NULL — OOM is fatal and cannot be recovered from
+ * Never returns NULL - OOM is fatal and cannot be recovered from
  * at the cJSON level, so we abort cleanly. */
 static cJSON *new_text_result(const char *msg) {
     cJSON *r = cJSON_CreateObject();
@@ -69,7 +69,7 @@ static cJSON *new_text_result(const char *msg) {
 }
 
 /* ============================================================================
- * Shared Helpers — user approval
+ * Shared Helpers - user approval
  * ============================================================================ */
 
 /* Ask y/N. Returns 1 approved, 0 denied, -1 Ctrl+C.
@@ -122,7 +122,7 @@ static int check_approval(llm_runtime_t *rt, cJSON *result,
 }
 
 /* ============================================================================
- * Shared Helpers — path handling
+ * Shared Helpers - path handling
  * ============================================================================ */
 
 /* Expand leading ~ to $HOME. Result lives in the given arena. */
@@ -180,7 +180,7 @@ static const char *get_path_arg(const cJSON *args, cJSON *result) {
 static int mkdir_p(const char *path) {
     if (!path || path[0] == '\0') return -1;
 
-    /* Find the last '/' — everything after it is the filename */
+    /* Find the last '/' - everything after it is the filename */
     const char *last_slash = strrchr(path, '/');
     if (!last_slash || last_slash == path) {
         /* No directory component (e.g. "file.txt" or "/file.txt") */
@@ -219,7 +219,7 @@ static int mkdir_p(const char *path) {
 }
 
 /* ============================================================================
- * Shared Helpers — file I/O
+ * Shared Helpers - file I/O
  * ============================================================================ */
 
 /* Read file into a heap buffer.  Uses stat() (not fseek/ftell) so it
@@ -259,7 +259,7 @@ static char *read_file_at(const char *abs_path, size_t max_bytes,
 }
 
 /* ============================================================================
- * Shared Helpers — output sanitization
+ * Shared Helpers - output sanitization
  * ============================================================================ */
 
 /* In-place sanitize + per-line truncation + overall truncation.
@@ -270,8 +270,11 @@ static void sanitize_truncate_output(char **out_p,
     char *raw = *out_p;
     if (!raw || !*raw) return;
 
-    /* Step 1 — UTF-8 sanitize in-place */
+    /* Step 1 - UTF-8 sanitize in-place */
     sanitize_utf8((uint8_t *)raw, strlen(raw));
+
+      /* Step 1b - strip ANSI escape sequences in-place */
+      strip_ansi_escapes((uint8_t *)raw, strlen(raw));
 
     /* Allocate enough for max_total output + truncation markers.
        The raw input may be much smaller than max_total (e.g. short input
@@ -342,7 +345,7 @@ cJSON *tool_sleep(llm_runtime_t *rt, const cJSON *args) {
  * Shell Tool
  * ============================================================================ */
 
-/* Unique temp-file counter — avoids collisions within the same second */
+/* Unique temp-file counter - avoids collisions within the same second */
 static int g_tmp_counter = 0;
 
 cJSON *tool_shell(llm_runtime_t *rt, const cJSON *args) {

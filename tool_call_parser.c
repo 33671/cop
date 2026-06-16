@@ -239,7 +239,7 @@ const char *toolcall_parser_get_preview(const ToolCallDeltaParser *parser,
         /* Space + args opening */
         if (pos + 2 < bufsz) { buf[pos++] = ' '; buf[pos] = '\0'; }
 
-        /* Arguments — keep tail when truncating so scroll shows latest content */
+        /* Arguments - keep tail when truncating so scroll shows latest content */
         size_t args_len = slot->arguments ? sdslen(slot->arguments) : 0;
         if (slot->arguments && args_len > 0) {
             size_t arem = bufsz - pos - 4;  /* room for "..." + \0 */

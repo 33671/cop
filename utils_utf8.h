@@ -7,6 +7,7 @@
 #include "sds/sds.h"
 
 void sanitize_utf8(uint8_t *data, size_t len);
+void strip_ansi_escapes(uint8_t *data, size_t len);
 int utf8_char_width(const char *s, int *bytes);
 int utf8_string_width(const char *s);
 

@@ -87,6 +87,60 @@ void sanitize_utf8(uint8_t *data, size_t len) {
     }
 }
 
+/* ── ANSI escape sequence stripping ───────────────────────────────── */
+
+/* Strip ANSI escape sequences in-place. After the call the string is
+ * null-terminated at its new (possibly shorter) length.
+ *
+ * Handles:
+ *   CSI  sequences:  ESC [ ... final-byte (0x40–0x7E)
+ *   OSC  sequences:  ESC ] ... BEL (0x07)  or  ESC ] ... ESC \ (ST)
+ *   Other ESC seqs:  ESC + one following byte (consumed)
+ *
+ * The read/write compaction guarantees no buffer overrun and is safe
+ * to call on strings that have already been sanitize_utf8'd. */
+void strip_ansi_escapes(uint8_t *data, size_t len) {
+    if (!data || len == 0) return;
+
+    size_t r = 0, w = 0;
+    while (r < len) {
+        if (data[r] != 0x1B) {
+            data[w++] = data[r++];
+            continue;
+        }
+
+        /* ESC found - look ahead to determine sequence type */
+        size_t peek = r + 1;
+        if (peek >= len) {           /* lone ESC at end → drop it */
+            r = peek;
+            break;
+        }
+
+        if (data[peek] == '[') {
+            /* CSI: ESC [ <param 0x30-0x3F> <intermediate 0x20-0x2F> <final 0x40-0x7E> */
+            peek++;                  /* skip '[' */
+            while (peek < len && data[peek] < 0x40) peek++;  /* consume params */
+            if (peek < len && data[peek] <= 0x7E) peek++;    /* consume final byte */
+            r = peek;
+        } else if (data[peek] == ']') {
+            /* OSC: ESC ] ... (BEL | ESC \ ) */
+            peek++;                  /* skip ']' */
+            while (peek < len) {
+                if (data[peek] == 0x07)        { peek++; break; }  /* BEL */
+                if (data[peek] == 0x1B && peek + 1 < len
+                                  && data[peek + 1] == '\\') { peek += 2; break; }  /* ST */
+                peek++;
+            }
+            r = peek;
+        } else {
+            /* Other: ESC + single byte (e.g. ESC N, ESC c, etc.) */
+            r = peek + 1;
+        }
+    }
+
+    data[w] = '\0';
+}
+
 /* ── 区间二分查找（参照 isocline/wcwidth.c） ──────────────────────── */
 
 struct interval { uint32_t first; uint32_t last; };
@@ -380,7 +434,7 @@ int utf8_string_width(const char *s) {
 }
 
 /* ============================================================================
- * get_last_n_lines_truncated — extract tail of a string with per-line caps
+ * get_last_n_lines_truncated - extract tail of a string with per-line caps
  * ============================================================================ */
 
 sds get_last_n_lines_truncated(Arena *a, const char *data, size_t len,

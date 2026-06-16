@@ -42,7 +42,7 @@
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
 
-/* sdsfree is a no-op in arena mode — the allocator cannot free
+/* sdsfree is a no-op in arena mode - the allocator cannot free
  * individual strings.  Kept as a macro so internal cleanup paths
  * compile away to nothing. */
 #define sdsfree(s) ((void)(s))
@@ -196,7 +196,7 @@ sds sdsdupTo(Arena *dst, const sds s) {
  *
  * In arena mode this is a no-op because:
  *
- *   1. Arena is a bump allocator — it cannot free individual allocations
+ *   1. Arena is a bump allocator - it cannot free individual allocations
  *      out of order. Memory is laid out contiguously in 8KB Regions, and
  *      freeing one sds would leave a hole the allocator can't reuse.
  *
@@ -954,7 +954,7 @@ cleanup:
 /* Free the result returned by sdssplitlen(), or do nothing if 'tokens' is NULL.
  *
  * In arena mode both sdsfree'ing individual tokens and freeing the tokens
- * array are no-ops — everything lives in the same arena and will be
+ * array are no-ops - everything lives in the same arena and will be
  * reclaimed together by arena_reset() / arena_free(). */
 void sdsfreesplitres(sds *tokens, int count) {
     if (!tokens) return;

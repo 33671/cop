@@ -4,7 +4,7 @@
  * Curl child-process management: fork, pipe setup, curl execution,
  * retry logic, and cancellation.
  *
- * Internal module — not part of the public API.
+ * Internal module - not part of the public API.
  */
 
 #define _GNU_SOURCE
@@ -147,7 +147,7 @@ static int buffer_looks_like_sse(stream_buffer_t *buf) {
 }
 
 /* ============================================================================
- * Stream Chat — Fork + Curl + Retry
+ * Stream Chat - Fork + Curl + Retry
  * ============================================================================ */
 
 coroutine int stream_curl_start_chat(stream_client_t *c, cJSON *messages) {
@@ -328,19 +328,19 @@ coroutine int stream_curl_start_chat(stream_client_t *c, cJSON *messages) {
                         break;
                     }
                 } else if (n == 0) {
-                    break;  /* EOF — no SSE seen */
+                    break;  /* EOF - no SSE seen */
                 } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
                     log_write(c, "read error: %s", strerror(errno));
                     break;
                 }
             }
             if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
-                break;  /* hangup — no SSE seen */
+                break;  /* hangup - no SSE seen */
             }
         }
 
         if (looks_sse) {
-            /* SSE stream confirmed — leave pipe open for real-time streaming.
+            /* SSE stream confirmed - leave pipe open for real-time streaming.
              * extract_chunk_internal will continue reading from the pipe. */
             c->state = CLIENT_STATE_STREAMING;
             success = 1;
@@ -352,7 +352,7 @@ coroutine int stream_curl_start_chat(stream_client_t *c, cJSON *messages) {
         }
 
         /*
-         * No SSE data arrived — the response was an error (HTTP 4xx/5xx,
+         * No SSE data arrived - the response was an error (HTTP 4xx/5xx,
          * network failure, etc.) or the pipe closed before any data.
          * Close the pipe, reap the child, and decide whether to retry.
          */
@@ -378,7 +378,7 @@ coroutine int stream_curl_start_chat(stream_client_t *c, cJSON *messages) {
             const char *desc = "unknown";
             switch (child_exit) {
             case CHILD_EXIT_OK:
-                /* HTTP 2xx but no SSE data?  Shouldn't happen — treat
+                /* HTTP 2xx but no SSE data?  Shouldn't happen - treat
                  * as non-retryable empty response. */
                 desc = "empty response"; break;
             case CHILD_EXIT_NET_ERR:
@@ -399,7 +399,7 @@ coroutine int stream_curl_start_chat(stream_client_t *c, cJSON *messages) {
             }
 
             if (attempt >= c->max_retries) {
-                fprintf(stderr, "[error] max retries (%d) exhausted — %s\n",
+                fprintf(stderr, "[error] max retries (%d) exhausted - %s\n",
                         c->max_retries, desc);
                 c->state = CLIENT_STATE_ERROR;
                 c->error_code = child_exit;
@@ -410,7 +410,7 @@ coroutine int stream_curl_start_chat(stream_client_t *c, cJSON *messages) {
                     attempt + 1, c->max_retries, desc);
 
         } else {
-            /* Child killed by signal — not retryable */
+            /* Child killed by signal - not retryable */
             log_write(c, "Parent: child killed by signal %d", WTERMSIG(status));
             c->state = CLIENT_STATE_ERROR;
             break;
@@ -440,7 +440,7 @@ void stream_curl_cancel(stream_client_t *c) {
     if (c->curl_pid > 0) {
         log_write(c, "Killing child process (pid=%d)", c->curl_pid);
         kill(c->curl_pid, SIGKILL);
-        /* Don't waitpid here — let wait_done or free reap the zombie */
+        /* Don't waitpid here - let wait_done or free reap the zombie */
     }
 }
 

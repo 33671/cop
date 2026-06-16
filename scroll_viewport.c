@@ -134,7 +134,7 @@ char *scroll_viewport_finish(scroll_viewport_t *vp, size_t *out_len) {
      * Do NOT try to clear the viewport from the terminal with ANSI
      * cursor-move sequences here.  A signal handler (e.g. Ctrl+C) may
      * have printed extra text via raw write() between viewport updates,
-     * shifting the cursor position — any cursor-relative clearing would
+     * shifting the cursor position - any cursor-relative clearing would
      * land in the wrong place and cause visual corruption.
      *
      * Instead, just leave the output visible on screen.  Ensure cursor
@@ -167,11 +167,18 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
     /* ── Append to full buffer ── */
     size_t needed = vp->full_len + (size_t)len + 1;
     if (buf_ensure(&vp->full_buf, &vp->full_cap, needed) != 0)
-        return;   /* OOM — skip this chunk */
+        return;   /* OOM - skip this chunk */
 
-    memcpy(vp->full_buf + vp->full_len, chunk, (size_t)len);
+    size_t chunk_start = vp->full_len;
+    memcpy(vp->full_buf + chunk_start, chunk, (size_t)len);
     vp->full_len += (size_t)len;
     vp->full_buf[vp->full_len] = '\0';
+
+    /* Strip ANSI escapes from the newly appended portion so they
+     * never reach the terminal (prevents cursor/screen corruption). */
+    strip_ansi_escapes((uint8_t *)(vp->full_buf + chunk_start), (size_t)len);
+    vp->full_len = chunk_start + strlen(vp->full_buf + chunk_start);
+    size_t stripped_len = vp->full_len - chunk_start;
 
     /* ── Estimate visual lines (accounts for terminal word-wrap) ── */
     int total_lines = estimate_visual_lines(vp->full_buf, vp->full_len,
@@ -183,7 +190,8 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
     if (total_lines <= vp->max_lines) {
         /* ── Normal mode: just print the chunk ── */
         printf("%s", pre);
-        printf("%.*s", len, chunk);
+        if (stripped_len > 0)
+            printf("%.*s", (int)stripped_len, vp->full_buf + chunk_start);
         printf("%s", post);
         fflush(stdout);
         vp->printed_lines = total_lines;
@@ -237,7 +245,7 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
             if (seg_visual <= can_skip) {
                 visual_skipped += seg_visual;
             } else {
-                /* This logical line straddles the boundary — print its tail */
+                /* This logical line straddles the boundary - print its tail */
                 int skip_here = can_skip;
                 size_t offset = (size_t)((long long)skip_here * (long long)seg_len
                                          / (long long)seg_visual);
@@ -249,7 +257,7 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
                 visual_skipped += seg_visual;
             }
         } else {
-            /* Fully visible — print entire logical line */
+            /* Fully visible - print entire logical line */
             if (seg_len > 0) {
                 printf("%s", pre);
                 printf("%.*s", (int)seg_len, vp->full_buf + pos);

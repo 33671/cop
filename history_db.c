@@ -337,12 +337,12 @@ int history_db_delete_sessions_by_cwd(history_db_t *db, const char *cwd) {
 }
 
 /* ============================================================================
- * Messages — Save
+ * Messages - Save
  * ============================================================================ */
 
 /*
  * Extract a string field from a cJSON object, returns "" if missing.
- * The returned pointer is into cJSON's memory — do not free.
+ * The returned pointer is into cJSON's memory - do not free.
  */
 static const char *json_get_string(const cJSON *obj, const char *key) {
     cJSON *item = cJSON_GetObjectItem(obj, key);
@@ -425,7 +425,7 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
 }
 
 /* ============================================================================
- * Messages — Load
+ * Messages - Load
  * ============================================================================ */
 
 cJSON *history_db_load_session(history_db_t *db, int64_t session_id) {
@@ -488,7 +488,7 @@ cJSON *history_db_load_session(history_db_t *db, int64_t session_id) {
 }
 
 /* ============================================================================
- * Messages — Count
+ * Messages - Count
  * ============================================================================ */
 
 int history_db_get_saved_count(history_db_t *db, int64_t session_id) {

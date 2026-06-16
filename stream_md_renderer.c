@@ -1337,7 +1337,7 @@ void md_display_feed(md_display_t *d, const char *text, int len) {
         }
     }
 
-    /* Save current as prev for next diff (malloc copy — cur lives in
+    /* Save current as prev for next diff (malloc copy - cur lives in
      * the renderer arena and will be invalidated on the next feed). */
     free(d->prev);
     d->prev = malloc((size_t)cur_len + 1);

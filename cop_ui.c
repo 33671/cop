@@ -478,7 +478,7 @@ static void cmd_load(cop_context_t *ctx, const char *arg) {
 }
 
 /*
- * /resume — load the most recent session for the current working directory.
+ * /resume - load the most recent session for the current working directory.
  */
 static void cmd_resume(cop_context_t *ctx) {
     cJSON *list = history_db_list_sessions(ctx->db, ctx->cwd);
@@ -731,7 +731,7 @@ void cop_ui_banner(cop_context_t *ctx, const char *model,
     printf("Log:      %s\n", log_file);
     printf("CWD:      %s\n", cwd);
     if (ctx->rt && llm_runtime_is_yolo(ctx->rt))
-        printf("Mode:     YOLO — auto-approving all tool calls\n");
+        printf("Mode:     YOLO - auto-approving all tool calls\n");
     printf("Input:    Enter=newline, Alt+Enter/Ctrl+T=submit\n");
     printf("Commands: /model, /set_model <id>, /sessions, /load, /delete, /export, /resume\n");
 }

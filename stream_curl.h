@@ -3,7 +3,7 @@
  *
  * Internal module for curl child-process management: fork, pipe setup,
  * curl execution, retry logic, and cancellation.
- * NOT part of the public API — do not install.
+ * NOT part of the public API - do not install.
  */
 
 #ifndef STREAM_CURL_H
@@ -14,11 +14,11 @@
 #include "libmill/libmill.h"
 
 /* Child process exit codes used to communicate error type to parent. */
-#define CHILD_EXIT_OK          0   /* HTTP 2xx — success              */
-#define CHILD_EXIT_NET_ERR     1   /* curl/network error — retryable  */
-#define CHILD_EXIT_HTTP_4XX    2   /* HTTP 4xx — not retryable        */
-#define CHILD_EXIT_HTTP_5XX    3   /* HTTP 5xx — retryable            */
-#define CHILD_EXIT_HTTP_429    4   /* HTTP 429 — retryable (rate limit) */
+#define CHILD_EXIT_OK          0   /* HTTP 2xx - success              */
+#define CHILD_EXIT_NET_ERR     1   /* curl/network error - retryable  */
+#define CHILD_EXIT_HTTP_4XX    2   /* HTTP 4xx - not retryable        */
+#define CHILD_EXIT_HTTP_5XX    3   /* HTTP 5xx - retryable            */
+#define CHILD_EXIT_HTTP_429    4   /* HTTP 429 - retryable (rate limit) */
 
 /*
  * Start a streaming chat request by forking a curl child process.

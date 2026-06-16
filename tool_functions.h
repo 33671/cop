@@ -56,7 +56,7 @@ cJSON *tool_read(llm_runtime_t *rt, const cJSON *args);
 /*
  * Write tool: writes or appends content to a file.
  * Creates parent directories if they don't exist.
- * Requires user approval before writing — shows a preview of the
+ * Requires user approval before writing - shows a preview of the
  * path and content.
  *
  * Args: {"path": "<filepath>", "content": "<content>", "mode": "<str>"}

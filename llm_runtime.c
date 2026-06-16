@@ -337,7 +337,7 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
         }
 
         /* FDW_ERR without FDW_IN: child may have exited and closed the pipe.
-         * Try one more read — read() returns 0 for EOF. */
+         * Try one more read - read() returns 0 for EOF. */
         if ((ev & FDW_ERR) && !(ev & FDW_IN)) {
             ssize_t r = pipe_drain(pipefd[0], &out_buf, &out_len, &out_cap);
             if (r == 0) { finished = 1; }
@@ -368,7 +368,7 @@ coroutine int llm_runtime_popen(llm_runtime_t *rt,
         out_buf[--out_len] = '\0';
     }
 
-    /* Always return accumulated output — even on timeout/cancellation */
+    /* Always return accumulated output - even on timeout/cancellation */
     *output    = out_buf;
     *exit_code = finished && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     return finished ? 0 : -1;

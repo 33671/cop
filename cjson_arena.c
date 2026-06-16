@@ -5,7 +5,7 @@
  * (create / parse / delete) bypass malloc/free entirely.
  *
  * cjson_arena_init() must be called once before any cJSON usage.
- * The arena is never freed during the session — it grows monotonically
+ * The arena is never freed during the session - it grows monotonically
  * and is reclaimed by the OS on exit.  If per-step cleanup is needed,
  * snapshots and rewind can be added later.
  */

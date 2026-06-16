@@ -21,9 +21,9 @@ void load_env_file(const char *path);
  *
  * Returns:
  *   > 0   bytes read and accumulated (data was available)
- *     0   EOF — the write end of the pipe was closed
- *    -1   EAGAIN / EWOULDBLOCK — no data available, try later
- *    -2   fatal error — realloc failed or a real read error (check errno)
+ *     0   EOF - the write end of the pipe was closed
+ *    -1   EAGAIN / EWOULDBLOCK - no data available, try later
+ *    -2   fatal error - realloc failed or a real read error (check errno)
  *
  * On success (>0) the buffer is NUL-terminated.  On -2 the buffer is left
  * in an undefined state; the caller should free it and bail out.
