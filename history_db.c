@@ -150,6 +150,45 @@ int history_db_open(history_db_t **db_out) {
         if (err) sqlite3_free(err);  /* silently ignore "duplicate column" */
     }
 
+    /* Migration: remove duplicate messages caused by pre-transaction
+     * partial-save bugs, then add a UNIQUE index to prevent future ones. */
+    {
+        char *err = NULL;
+        /* Try creating the unique index first. If it fails because of
+         * existing duplicates, clean them up and retry. */
+        int rc = sqlite3_exec(db->conn,
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_msg "
+            "  ON messages(session_id, msg_index)",
+            NULL, NULL, &err);
+        if (rc != SQLITE_OK && err) {
+            /* Likely duplicate (session_id, msg_index) rows exist.
+             * Delete duplicates keeping only the earliest row per pair. */
+            sqlite3_free(err);
+            err = NULL;
+            sqlite3_exec(db->conn,
+                "DELETE FROM messages WHERE id NOT IN ("
+                "  SELECT MIN(id) FROM messages GROUP BY session_id, msg_index"
+                ")",
+                NULL, NULL, &err);
+            if (err) {
+                fprintf(stderr, "[history_db] duplicate cleanup: %s\n", err);
+                sqlite3_free(err);
+                err = NULL;
+            }
+            /* Retry creating the unique index */
+            sqlite3_exec(db->conn,
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_msg "
+                "  ON messages(session_id, msg_index)",
+                NULL, NULL, &err);
+            if (err) {
+                fprintf(stderr, "[history_db] unique index creation: %s\n", err);
+                sqlite3_free(err);
+            }
+        } else if (err) {
+            sqlite3_free(err);
+        }
+    }
+
     *db_out = db;
     return 0;
 }
@@ -318,8 +357,12 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
     int total = cJSON_GetArraySize(messages);
     if (total <= *saved_count) return 0;  /* nothing new */
 
+    /* Wrap all inserts in a single transaction so that a failure
+     * mid-way rolls back cleanly, and saved_count stays consistent. */
+    if (exec_sql(db->conn, "BEGIN IMMEDIATE") != 0) return -1;
+
     const char *sql =
-        "INSERT INTO messages (session_id, msg_index, role, content, "
+        "INSERT OR IGNORE INTO messages (session_id, msg_index, role, content, "
         "reasoning_content, tool_call_id, tool_calls) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)";
 
@@ -327,10 +370,10 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
     if (sqlite3_prepare_v2(db->conn, sql, -1, &stmt, NULL) != SQLITE_OK) {
         fprintf(stderr, "[history_db] save_step prepare: %s\n",
                 sqlite3_errmsg(db->conn));
+        exec_sql(db->conn, "ROLLBACK");
         return -1;
     }
 
-    /* Auto-commit mode: each INSERT is committed immediately */
     for (int i = *saved_count; i < total; i++) {
         cJSON *msg = cJSON_GetArrayItem(messages, i);
         if (!msg) continue;
@@ -363,6 +406,7 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
                     sqlite3_errmsg(db->conn));
             sqlite3_finalize(stmt);
             free(tool_calls_str);
+            exec_sql(db->conn, "ROLLBACK");
             return -1;
         }
 
@@ -370,6 +414,12 @@ int history_db_save_step(history_db_t *db, int64_t session_id,
     }
 
     sqlite3_finalize(stmt);
+
+    if (exec_sql(db->conn, "COMMIT") != 0) {
+        exec_sql(db->conn, "ROLLBACK");
+        return -1;
+    }
+
     *saved_count = total;
     return 0;
 }

@@ -295,6 +295,7 @@ static void on_runtime_event(llm_runtime_t *rt,
  * ============================================================================ */
 static void save_history_step(cop_context_t *ctx) {
     if (!ctx->db) return;
+    if (ctx->want_exit) return;
 
     const cJSON *history = llm_runtime_get_history(ctx->rt);
     if (!history) return;
@@ -637,6 +638,8 @@ coroutine void cop_ui_repl(cop_context_t *ctx) {
     while (1) {
         yield();
 
+        if (ctx->want_exit) break;
+
         char *line = ic_readline("[green][b]User[/] ");
         if (!line) break;
 
@@ -697,7 +700,9 @@ coroutine void cop_ui_repl(cop_context_t *ctx) {
     }
 
     printf("\nGoodbye!\n");
-    _exit(0);
+    ctx->want_exit = 1;
+    /* let cop.c's main loop run the cleanup path */
+    return;
 }
 
 /* ============================================================================
