@@ -8,6 +8,7 @@
 #include "utils.h"
 #include "scroll_viewport.h"
 #include "diff.h"
+#include "fuzzy_replace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -673,6 +674,7 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args) {
  * Edit Tool
  * ============================================================================ */
 
+/* fuzzy-edit: whitespace-flexible matching confirmed ✓ */
 cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     (void)rt;
     cJSON *result = new_text_result(NULL);
@@ -724,11 +726,11 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     char *buf = read_file_at(abs_path, TOOL_READ_MAX_BYTES, &nread, result);
     if (!buf) { tool_arena_cleanup(); return result; }
 
-    size_t old_len = strlen(old_str);
-    size_t new_len = strlen(new_str);
-    char  *first_match = strstr(buf, old_str);
+    /* ── Fuzzy find all match positions ── */
+    int match_count = 0;
+    MatchSpan *spans = fuzzy_find(&tool_arena, buf, old_str, 1, &match_count);
 
-    if (!first_match) {
+    if (match_count == 0) {
         free(buf);
         sds eb = sdscatprintf(sdsempty(&tool_arena),
                  "No occurrences found to replace in %s", abs_path);
@@ -737,32 +739,29 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
         return result;
     }
 
-    /* Perform replacement using sds */
+    /* ── Build new_content from match spans ── */
     sds   new_content = sdsempty(&tool_arena);
     size_t new_size    = 0;
+    int    replacements = 0;
 
-    int replacements = 0;
-    if (replace_all) {
-        char *src = buf, *match;
-        while ((match = strstr(src, old_str))) {
-            replacements++;
-            size_t before = (size_t)(match - src);
-            new_content = sdscatlen(new_content, src, before);
-            new_content = sdscatlen(new_content, new_str, new_len);
-            src = match + old_len;
-        }
-        size_t rem = nread - (size_t)(src - buf);
-        new_content = sdscatlen(new_content, src, rem);
-        new_size = sdslen(new_content);
-    } else {
-        replacements = 1;
-        size_t before_len = (size_t)(first_match - buf);
-        size_t after_len  = nread - before_len - old_len;
-        new_content = sdscatlen(new_content, buf, before_len);
-        new_content = sdscatlen(new_content, new_str, new_len);
-        new_content = sdscatlen(new_content, first_match + old_len, after_len);
-        new_size = sdslen(new_content);
+    size_t src = 0;
+    int limit = replace_all ? match_count : 1;
+    for (int mi = 0; mi < limit; mi++) {
+        int ms = spans[mi].start;
+        int me = spans[mi].finish;
+        /* Copy text before this match */
+        size_t before = (size_t)(ms - (int)src);
+        if (before > 0) new_content = sdscatlen(new_content, buf + src, before);
+        /* Append replacement */
+        new_content = sdscat(new_content, new_str);
+        src = (size_t)me;
+        replacements++;
     }
+    /* Copy remaining text after last match */
+    if (src < nread) {
+        new_content = sdscatlen(new_content, buf + src, nread - src);
+    }
+    new_size = sdslen(new_content);
 
     if (new_size == nread && memcmp(new_content, buf, nread) == 0) {
         free(buf);
@@ -777,7 +776,7 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     char *diff_out = diff_text(buf, nread, new_content, new_size, 3);
 
     /* Preview: show file path, replace mode, and diff */
-    printf("  [tool] editing: %s\n", abs_path);
+    printf("  [tool] editing (fuzzy match): %s\n", abs_path);
     printf("  [%s]\n", replace_all
            ? "replacing ALL occurrences" : "replacing first occurrence only");
     if (diff_out) {

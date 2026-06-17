@@ -224,7 +224,7 @@ add_library(diff STATIC diff.c)
 target_compile_options(diff PRIVATE ${COMPILE_WARNING_CONTROL})
 target_include_directories(diff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_library(tool_functions STATIC tool_functions.c scroll_viewport.c)
+add_library(tool_functions STATIC tool_functions.c scroll_viewport.c fuzzy_replace.c)
 target_compile_options(tool_functions PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(tool_functions
     diff
