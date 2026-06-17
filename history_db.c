@@ -5,6 +5,7 @@
  */
 
 #include "history_db.h"
+#include "utils.h"
 #include "sds/sds.h"
 #include "sqlite/sqlite3.h"
 #include <stdio.h>
@@ -24,19 +25,6 @@ struct history_db {
 /* ============================================================================
  * Helpers
  * ============================================================================ */
-
-/* Expand ~ in path. Result lives in the given arena. */
-static sds expand_path(Arena *a, const char *path) {
-    if (!path) return NULL;
-
-    if (path[0] == '~') {
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
-        return sdscatprintf(sdsempty(a), "%s%s", home, path + 1);
-    }
-
-    return sdsnew(a, path);
-}
 
 /* Create parent directories for a file path. */
 static int mkdir_p(const char *filepath) {
@@ -85,7 +73,9 @@ int history_db_open(history_db_t **db_out) {
     if (!db) return -1;
 
     Arena a = {0};
-    sds db_path = expand_path(&a, "~/.cop/history.sql");
+    char *expanded = expand_tilde("~/.cop/history.sql");
+    sds db_path = expanded ? sdsnew(&a, expanded) : NULL;
+    free(expanded);
     if (!db_path) {
         arena_free(&a);
         free(db);

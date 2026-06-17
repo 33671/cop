@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 /* ============================================================================
  * Tool Result Helper
@@ -243,9 +244,20 @@ int agent_loop_run(llm_runtime_t *rt,
     /* ---- Step 1: Add user message to history if provided ---- */
     if (user_text) {
         debug_log("[debug] Step 1: adding user message: \"%.60s\"\n", user_text);
+
+        /* Build timestamp-prefixed user message: "[YY-MM-DD HH:MM] <text>" */
+        time_t now_ts = time(NULL);
+        struct tm *tm = localtime(&now_ts);
+        char ts_prefix[32];
+        strftime(ts_prefix, sizeof(ts_prefix), "[%y-%m-%d %H:%M] ", tm);
+
+        sds ts_content = sdsempty(&rt->arena);
+        ts_content = sdscat(ts_content, ts_prefix);
+        ts_content = sdscat(ts_content, user_text);
+
         cJSON *msg = cJSON_CreateObject();
         cJSON_AddStringToObject(msg, "role", "user");
-        cJSON_AddStringToObject(msg, "content", user_text);
+        cJSON_AddStringToObject(msg, "content", ts_content);
         LlmParserStatus st = llm_parser_add_message(rt->parser, msg);
         if (st < 0) {
             /* If previous assistant stream wasn't properly finished

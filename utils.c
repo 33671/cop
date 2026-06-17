@@ -58,6 +58,20 @@ void load_env_file(const char *path) {
  *
  * Returns: >0 = bytes read, 0 = EOF, -1 = EAGAIN, -2 = fatal error.
  */
+char *expand_tilde(const char *path) {
+    if (!path) return NULL;
+    if (path[0] != '~') return strdup(path);
+
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+
+    size_t len = strlen(home) + strlen(path);
+    char *result = malloc(len);
+    if (!result) return NULL;
+    snprintf(result, len, "%s%s", home, path + 1);
+    return result;
+}
+
 ssize_t pipe_drain(int fd, char **buf, size_t *len, size_t *cap) {
     char tmp[4096];
     ssize_t n = read(fd, tmp, sizeof(tmp));

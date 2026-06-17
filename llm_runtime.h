@@ -6,7 +6,7 @@
  *
  * Usage (in a libmill coroutine):
  *
- *   llm_runtime_t *rt = llm_runtime_new(api_key, model, endpoint, logfile);
+ *   llm_runtime_t *rt = llm_runtime_new(api_key, model, endpoint, logfile, "You are a helpful assistant.");
  *   llm_runtime_register_tool(rt, "sleep", tool_sleep);
  *
  *   // In a coroutine:
@@ -115,13 +115,15 @@ typedef void (*llm_runtime_callback_t)(llm_runtime_t *rt,
 /*
  * Create a new LLM runtime.
  * All string parameters are copied internally.
- *   api_key      – required
- *   model        – required
- *   api_endpoint – NULL for default (Moonshot)
- *   log_file     – NULL for no logging
+ *   api_key        – required
+ *   model          – required
+ *   api_endpoint   – NULL for default (Moonshot)
+ *   log_file       – NULL for no logging
+ *   system_message – system prompt, passed through to stream client (NULL ok)
  */
 llm_runtime_t *llm_runtime_new(const char *api_key, const char *model,
-                                const char *api_endpoint, const char *log_file);
+                                const char *api_endpoint, const char *log_file,
+                                const char *system_message);
 
 /* Destroy runtime, cancel any active request, free all memory. */
 void llm_runtime_free(llm_runtime_t *rt);

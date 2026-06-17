@@ -16,11 +16,13 @@
 #include <curl/curl.h>
 
 #include "llm_runtime.h"
+#include "utils.h"
 #include "tool_functions.h"
 #include "history_db.h"
 #include "models_config.h"
 #include "cop_ui.h"
 #include "libmill/libmill.h"
+#include "sds/sds.h"
 
 /* ============================================================================
  * Global context pointer - for signal handler access only
@@ -44,15 +46,6 @@ int main(int argc, char *argv[]) {
     app.session_id = -1;
     g_cop_ctx = &app;
 
-    /* Ensure ~/.cop/ exists before loading config */
-    {
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
-        char cop_dir[512];
-        snprintf(cop_dir, sizeof(cop_dir), "%s/.cop", home);
-        mkdir(cop_dir, 0755);
-    }
-
     /* Load model config from ~/.cop/models.json */
     app.models = models_config_load();
     if (!app.models || !app.models[0]) {
@@ -73,13 +66,14 @@ int main(int argc, char *argv[]) {
     /* Log file: ~/.cop/cop_YYYYMMDD_HHMMSS.log */
     char log_file[512];
     {
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
+        char *cop_dir = expand_tilde("~/.cop");
+        if (!cop_dir) cop_dir = strdup("/tmp/.cop");
         time_t now = time(NULL);
         struct tm *tm = localtime(&now);
         char ts[32];
         strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", tm);
-        snprintf(log_file, sizeof(log_file), "%s/.cop/cop_%s.log", home, ts);
+        snprintf(log_file, sizeof(log_file), "%s/cop_%s.log", cop_dir, ts);
+        free(cop_dir);
     }
 
     /* Check saved model preference from ~/.cop/model_set */
@@ -122,8 +116,45 @@ int main(int argc, char *argv[]) {
     /* Init terminal UI */
     cop_ui_init(&app);
 
+    /* Capture working directory */
+    if (!getcwd(app.cwd, sizeof(app.cwd))) app.cwd[0] = '\0';
+
+    /* Build system prompt with current working directory appended */
+    Arena sys_arena = {0};
+    sds system_prompt = sdsempty(&sys_arena);
+    system_prompt = sdscat(system_prompt,
+        "You are an expert assistant operating inside an agent harness on Linux. You help users by reading files,"
+        "executing shell commands, editing code, and writing new files.\n"
+        "\nAvailable Tools:\n"
+        "- `shell`: Execute any shell command (bash, ls, grep, find, etc.). For long-running commands,\n"
+        "prefix with `timeout` to control execution time.\n"
+        "- `read`: Read file contents with offset/limit support. Use this to view source code, logs, config\n"
+        "files, or any text data.\n"
+        "- `write`: Create new files or overwrite existing ones. Parent directories are created\n"
+        "automatically. Append mode also supported.\n"
+        "- `edit`: Perform precise substring replacements in existing files. Supports single or replace-all\n"
+        "modes. Use for targeted changes rather than full rewrites.\n"
+        "- `sleep`: Pause execution for a specified number of seconds (useful for timing or waiting).\n"
+        "Guidelines:\n"
+        "- Use `shell` for exploration (`ls`, `find`, `grep`, `cat`, etc.) before reading or editing files.\n"
+        "- Use `read` to examine file contents instead of `cat` or `sed` in shell.\n"
+        "- Use `edit` for targeted changes — keep `old` text as short and unique as possible within the\n"
+        "file.\n"
+        "- Use `write` for new files or complete rewrites (when `edit` would be impractical).\n"
+        "- Be concise in responses and show file paths clearly when working with files.\n"
+        "- When you need to check environment state (current directory, file existence, etc.), use `shell`\n"
+        "commands first.\n"
+        "- Prefer making multiple independent changes in parallel when they don't depend on each other.\n"
+        "Response Style:\n"
+        "- Be helpful, direct, and actionable.\n"
+        "- Explain what you're doing and why, but keep explanations succinct.\n"
+        "- When in doubt, show the relevant output or code context.\n"
+        "\nCurrent working directory: ");
+    system_prompt = sdscat(system_prompt, app.cwd);
+
     /* Create runtime */
-    llm_runtime_t *rt = llm_runtime_new(api_key, model, api_endpoint, log_file);
+    llm_runtime_t *rt = llm_runtime_new(api_key, model, api_endpoint, log_file,
+        system_prompt);
     if (!rt) {
         fprintf(stderr, "Failed to create runtime\n");
         curl_global_cleanup();
@@ -134,9 +165,6 @@ int main(int argc, char *argv[]) {
     /* Set max_tokens from model config (0 = let API use default) */
     if (default_model->max_tokens > 0)
         llm_runtime_set_max_tokens(rt, default_model->max_tokens);
-
-    /* Capture working directory */
-    if (!getcwd(app.cwd, sizeof(app.cwd))) app.cwd[0] = '\0';
 
     /* Open history DB (session created lazily on first message) */
     history_db_open(&app.db);

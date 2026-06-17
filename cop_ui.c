@@ -5,6 +5,7 @@
  */
 
 #include "cop_ui.h"
+#include "utils.h"
 #include "tool_functions.h"
 #include "scroll_viewport.h"
 #include "isocline/include/isocline.h"
@@ -714,11 +715,11 @@ void cop_ui_init(cop_context_t *ctx) {
     ic_enable_multiline(true);
 
     /* Expand ~ for isocline history path */
-    char hist_path[512];
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(hist_path, sizeof(hist_path), "%s/.cop/.history", home);
-    ic_set_history(hist_path, 100);
+    char *hist_path = expand_tilde("~/.cop/.history");
+    if (hist_path) {
+        ic_set_history(hist_path, 100);
+        free(hist_path);
+    }
 
     ic_set_default_completer(completer_wrapper, NULL);
 }

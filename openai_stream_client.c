@@ -31,7 +31,8 @@
 stream_client_t *stream_client_new(const char *api_key, 
                                     const char *model,
                                     const char *api_endpoint, 
-                                    const char *log_file) {
+                                    const char *log_file,
+                                    const char *system_message) {
     if (!api_key || !model) {
         return NULL;
     }
@@ -43,7 +44,7 @@ stream_client_t *stream_client_new(const char *api_key,
     c->model = strdup(model);
     c->api_endpoint = strdup(api_endpoint ? api_endpoint : 
                               "https://api.moonshot.cn/v1/chat/completions");
-    c->system_message = strdup("You are a helpful assistant.");
+    c->system_message = system_message ? strdup(system_message) : NULL;
     c->temperature = 1.0;
     
     c->state = CLIENT_STATE_IDLE;

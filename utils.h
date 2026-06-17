@@ -30,6 +30,13 @@ void load_env_file(const char *path);
  */
 ssize_t pipe_drain(int fd, char **buf, size_t *len, size_t *cap);
 
+/*
+ * Expand leading ~ to $HOME in path.
+ * Returns malloc'd string; caller must free().
+ * Returns strdup(path) if no ~ prefix, or NULL on allocation failure.
+ */
+char *expand_tilde(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

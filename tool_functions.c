@@ -5,6 +5,7 @@
  */
 
 #include "tool_functions.h"
+#include "utils.h"
 #include "scroll_viewport.h"
 #include "diff.h"
 #include <stdio.h>
@@ -125,18 +126,13 @@ static int check_approval(llm_runtime_t *rt, cJSON *result,
  * Shared Helpers - path handling
  * ============================================================================ */
 
-/* Expand leading ~ to $HOME. Result lives in the given arena. */
-static sds expand_tilde(Arena *a, const char *path) {
-    if (!path || path[0] != '~') return sdsnew(a, path);
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-    return sdscatprintf(sdsempty(a), "%s%s", home, path + 1);
-}
-
 /* Resolve path to absolute: ~ expansion, realpath, CWD fallback.
  * Result lives in the given arena. */
 static sds resolve_abs_path(Arena *a, const char *path) {
-    sds expanded = expand_tilde(a, path);
+    if (!path) return sdsnew(a, "");
+    char *tmp = expand_tilde(path);
+    sds expanded = sdsnew(a, tmp ? tmp : path);
+    free(tmp);
     char *resolved = realpath(expanded, NULL);
     if (resolved) { return sdsnew(a, resolved); }
     if (expanded[0] == '/') return expanded;

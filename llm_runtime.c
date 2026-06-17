@@ -25,7 +25,8 @@
  * Lifecycle
  * ============================================================================ */
 llm_runtime_t *llm_runtime_new(const char *api_key, const char *model,
-                                const char *api_endpoint, const char *log_file) {
+                                const char *api_endpoint, const char *log_file,
+                                const char *system_message) {
     if (!api_key || !model) return NULL;
 
     llm_runtime_t *rt = calloc(1, sizeof(llm_runtime_t));
@@ -39,7 +40,7 @@ llm_runtime_t *llm_runtime_new(const char *api_key, const char *model,
     rt->running        = 1;
 
     /* Create stream client */
-    rt->client = stream_client_new(api_key, model, api_endpoint, log_file);
+    rt->client = stream_client_new(api_key, model, api_endpoint, log_file, system_message);
     if (!rt->client) {
         set_error(rt, "stream_client_new failed");
         llm_runtime_free(rt);

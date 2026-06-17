@@ -512,7 +512,8 @@ int main(int argc, char *argv[]) {
     ic_set_history(".history", 100);   /* persistent history */
 
     /* Create runtime */
-    llm_runtime_t *rt = llm_runtime_new(api_key, model, api_endpoint, log_file);
+    llm_runtime_t *rt = llm_runtime_new(api_key, model, api_endpoint, log_file,
+                                          "You are a helpful assistant.");
     if (!rt) {
         fprintf(stderr, "Failed to create runtime\n");
         curl_global_cleanup();

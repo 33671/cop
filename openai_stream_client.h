@@ -90,11 +90,13 @@ typedef struct stream_client {
  * model: Model name (required)
  * api_endpoint: Full URL endpoint (NULL for default Moonshot)
  * log_file: Path to log file (NULL for no logging)
+ * system_message: System prompt (NULL for no system message)
  */
 stream_client_t *stream_client_new(const char *api_key, 
                                     const char *model,
                                     const char *api_endpoint, 
-                                    const char *log_file);
+                                    const char *log_file,
+                                    const char *system_message);
 
 /*
  * Free a stream client and all associated resources.

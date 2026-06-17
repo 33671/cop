@@ -5,6 +5,7 @@
  */
 
 #include "models_config.h"
+#include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,17 +15,13 @@
  * Helpers
  * ============================================================================ */
 
-static char *expand_path(const char *path) {
-    if (!path) return NULL;
-    if (path[0] == '~') {
-        const char *home = getenv("HOME");
-        if (!home) home = "/tmp";
-        size_t len = strlen(home) + strlen(path);
-        char *result = malloc(len);
-        if (result) snprintf(result, len, "%s%s", home, path + 1);
-        return result;
+/* Ensure ~/.cop/ directory exists */
+static void ensure_cop_dir(void) {
+    char *cop_dir = expand_tilde("~/.cop");
+    if (cop_dir) {
+        mkdir(cop_dir, 0755);
+        free(cop_dir);
     }
-    return strdup(path);
 }
 
 /* Read entire file into a string. Caller must free. */
@@ -52,7 +49,9 @@ static char *read_file(const char *path) {
  * ============================================================================ */
 
 model_entry_t **models_config_load(void) {
-    char *path = expand_path("~/.cop/models.json");
+    ensure_cop_dir();
+
+    char *path = expand_tilde("~/.cop/models.json");
     if (!path) return NULL;
 
     char *json_str = read_file(path);
@@ -171,13 +170,10 @@ int models_config_count(model_entry_t **entries) {
 const model_entry_t *models_config_load_saved(model_entry_t **entries) {
     if (!entries) return NULL;
 
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/.cop/model_set", home);
-
+    char *path = expand_tilde("~/.cop/model_set");
+    if (!path) return NULL;
     FILE *f = fopen(path, "r");
+    free(path);
     if (!f) return NULL;
 
     char model_id[256];
@@ -196,18 +192,12 @@ const model_entry_t *models_config_load_saved(model_entry_t **entries) {
 int models_config_save_model(const char *model_id) {
     if (!model_id) return -1;
 
-    const char *home = getenv("HOME");
-    if (!home) home = "/tmp";
+    ensure_cop_dir();
 
-    /* Ensure ~/.cop/ exists */
-    char cop_dir[512];
-    snprintf(cop_dir, sizeof(cop_dir), "%s/.cop", home);
-    mkdir(cop_dir, 0755);
-
-    char path[512];
-    snprintf(path, sizeof(path), "%s/.cop/model_set", home);
-
+    char *path = expand_tilde("~/.cop/model_set");
+    if (!path) return -1;
     FILE *f = fopen(path, "w");
+    free(path);
     if (!f) return -1;
 
     fprintf(f, "%s\n", model_id);

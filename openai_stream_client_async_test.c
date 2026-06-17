@@ -161,7 +161,8 @@ int main(int argc, char *argv[]) {
     printf("╚════════════════════════════════════════════════════════╝\n\n");
     
     /* Create client */
-    stream_client_t *client = stream_client_new(api_key, model, api_endpoint, log_file);
+    stream_client_t *client = stream_client_new(api_key, model, api_endpoint, log_file,
+                                                  "You are a helpful assistant.");
     if (!client) {
         fprintf(stderr, "Failed to create client\n");
         return 1;
