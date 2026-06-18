@@ -2,6 +2,11 @@
  * fuzzy_replace.c — 模糊字符串替换 实现
  *
  * 算法：逐字符扫描 + token 序列匹配，零正则。
+ *
+ * 匹配规则：
+ *   - 水平空白（空格 ' '、制表符 '\t'、回车 '\r'）在 text 中可匹配任意数量/类型。
+ *   - 换行 '\n'：old_str 中有 n 个 \n 则 text 中也必须有恰好 n 个 \n。
+ *   - 当 old_str 中无 \n 时，向后兼容：\n 仍被当作普通空白匹配。
  */
 
 #include "fuzzy_replace.h"
@@ -18,6 +23,11 @@
  * 将 s 按空白字符切分成 tokens，同时判断首尾是否有空白。
  * tokens 数组和每个 token 字符串均从 arena 分配。
  *
+ * 另外输出 newline_sep 数组（长度 n_tokens，int 类型），
+ * newline_sep[idx] 表示 token[idx-1] 和 token[idx] 之间
+ * 的空白中包含多少个 \n（0 表示纯水平空白）。
+ * newline_sep[0] 未使用（保留为 0）。
+ *
  * 返回 token 数组，*out_count 为 token 数量。
  * 若没有 token（old_str 全空白），*out_count = 0 且返回 NULL。
  */
@@ -25,12 +35,14 @@ static sds* tokenize(Arena *a,
                      const char *s,
                      int *out_count,
                      int *leading_ws,
-                     int *trailing_ws)
+                     int *trailing_ws,
+                     int **out_newline_sep)
 {
     int slen = (int)strlen(s);
     *out_count = 0;
     *leading_ws = 0;
     *trailing_ws = 0;
+    *out_newline_sep = NULL;
     if (slen == 0) return NULL;
 
     /* 判断首尾空白 */
@@ -55,29 +67,47 @@ static sds* tokenize(Arena *a,
         return NULL;
     }
 
-    /* 分配 token 指针数组 */
+    /* 分配 token 指针数组和 newline_sep 数组 */
     sds *tokens = (sds*)arena_alloc(a, sizeof(sds) * tok_count);
+    int *newline_sep = (int*)arena_alloc(a, sizeof(int) * tok_count);
+    memset(newline_sep, 0, sizeof(int) * tok_count);
 
-    /* 第二遍：提取 token */
+    /* 第二遍：提取 token，同时检测 token 间隙中的 \n 数量 */
     int idx = 0;
     in_token = 0;
     int tok_start = 0;
+    int in_gap = 0;           /* 是否处于 token 间空白区域 */
+    int gap_nl_count = 0;     /* 当前间隙中的 \n 数量 */
+
     for (int i = 0; i <= slen; i++) {
         int ws = (i == slen) || isspace((unsigned char)s[i]);
         if (ws) {
             if (in_token) {
-                tokens[idx++] = sdsnewlen(a, s + tok_start, i - tok_start);
+                tokens[idx] = sdsnewlen(a, s + tok_start, i - tok_start);
+                idx++;
                 in_token = 0;
+                in_gap = 1;
+                gap_nl_count = 0;
+            }
+            if (in_gap && i < slen && s[i] == '\n') {
+                gap_nl_count++;
             }
         } else {
             if (!in_token) {
                 tok_start = i;
                 in_token = 1;
+                /* 刚从一个空白间隙进入新 token */
+                if (in_gap && idx > 0) {
+                    newline_sep[idx] = gap_nl_count;
+                }
+                in_gap = 0;
+                gap_nl_count = 0;
             }
         }
     }
 
     *out_count = tok_count;
+    *out_newline_sep = newline_sep;
     return tokens;
 }
 
@@ -90,6 +120,8 @@ static sds* tokenize(Arena *a,
  *   text, text_len  - 原始文本及长度
  *   start           - 当前扫描起始位置
  *   tokens, n_tokens - old_str 拆分出的 token 数组
+ *   newline_sep     - newline_sep[idx] 为 \n 个数（token[idx-1..idx] 间隙中
+ *                      包含多少个 \n，0 表示纯水平空白；索引 0 不使用）
  *   leading_ws      - old_str 是否以空白开头
  *   trailing_ws     - old_str 是否以空白结尾
  *   case_sensitive  - 是否区分大小写
@@ -100,14 +132,15 @@ static sds* tokenize(Arena *a,
  *   匹配失败 → -1
  */
 static int try_match_tokens(const char *text,
-                            int text_len,
-                            int start,
-                            sds *tokens,
-                            int n_tokens,
-                            int leading_ws,
-                            int trailing_ws,
-                            int case_sensitive,
-                            int *out_start)
+                             int text_len,
+                             int start,
+                             sds *tokens,
+                             int n_tokens,
+                             const int *newline_sep,
+                             int leading_ws,
+                             int trailing_ws,
+                             int case_sensitive,
+                             int *out_start)
 {
     int ti = start;
 
@@ -129,11 +162,37 @@ static int try_match_tokens(const char *text,
     /* ── 2. 逐个匹配 token ── */
     for (int idx = 0; idx < n_tokens; idx++) {
         if (idx > 0) {
-            /* token 之间至少需要一个空白 */
-            if (ti >= text_len || !isspace((unsigned char)text[ti]))
-                return -1;
-            while (ti < text_len && isspace((unsigned char)text[ti]))
-                ti++;
+            /*
+             * token 之间需要空白。区分两种空白：
+             *  - 水平空白 (空格 ' '、制表符 '\t'、回车 '\r')：可以模糊匹配
+             *  - 换行 '\n'：old_str 中有则要求 text 中也有且数量一致
+             */
+            if (newline_sep && newline_sep[idx] > 0) {
+                /* old_str 在此处有 \n：消耗水平空白，
+                 * 然后精确匹配 newline_sep[idx] 个 \n
+                 *（每个 \n 前后可有任意水平空白） */
+                int nl_needed = newline_sep[idx];
+                for (int k = 0; k < nl_needed; k++) {
+                    /* 可选的水平空白 */
+                    while (ti < text_len &&
+                           (text[ti] == ' ' || text[ti] == '\t' || text[ti] == '\r'))
+                        ti++;
+                    if (ti >= text_len || text[ti] != '\n')
+                        return -1;
+                    ti++;  /* 消耗 \n */
+                }
+                /* \n 之后可能跟随的水平空白 */
+                while (ti < text_len &&
+                       (text[ti] == ' ' || text[ti] == '\t' || text[ti] == '\r'))
+                    ti++;
+            } else {
+                /* old_str 在此处没有 \n，只有水平空白。
+                 * 向后兼容：允许 \n 出现并被消耗 */
+                if (ti >= text_len || !isspace((unsigned char)text[ti]))
+                    return -1;
+                while (ti < text_len && isspace((unsigned char)text[ti]))
+                    ti++;
+            }
         }
 
         size_t tok_len = sdslen(tokens[idx]);
@@ -168,18 +227,20 @@ static int try_match_tokens(const char *text,
  * ────────────────────────────────────────────── */
 
 sds fuzzy_replace(Arena *a,
-                  const char *text,
-                  const char *old_str,
-                  const char *new_str,
-                  int count,
-                  int case_sensitive)
+                   const char *text,
+                   const char *old_str,
+                   const char *new_str,
+                   int count,
+                   int case_sensitive)
 {
     int text_len = (int)strlen(text);
 
     /* 1. 切分 old_str */
     int n_tokens = 0;
     int leading_ws = 0, trailing_ws = 0;
-    sds *tokens = tokenize(a, old_str, &n_tokens, &leading_ws, &trailing_ws);
+    int *newline_sep = NULL;
+    sds *tokens = tokenize(a, old_str, &n_tokens, &leading_ws, &trailing_ws,
+                           &newline_sep);
 
     if (n_tokens == 0) {
         /* old_str 为空或全空白 → 返回原文本副本 */
@@ -203,6 +264,7 @@ sds fuzzy_replace(Arena *a,
             int match_start = 0;
             int match_end = try_match_tokens(text, text_len, i,
                                              tokens, n_tokens,
+                                             newline_sep,
                                              leading_ws, trailing_ws,
                                              case_sensitive,
                                              &match_start);
@@ -229,26 +291,28 @@ sds fuzzy_replace(Arena *a,
 }
 
 sds fuzzy_replace_first(Arena *a,
-                        const char *text,
-                        const char *old_str,
-                        const char *new_str,
-                        int case_sensitive)
+                         const char *text,
+                         const char *old_str,
+                         const char *new_str,
+                         int case_sensitive)
 {
     return fuzzy_replace(a, text, old_str, new_str, 1, case_sensitive);
 }
 
 MatchSpan* fuzzy_find(Arena *a,
-                      const char *text,
-                      const char *old_str,
-                      int case_sensitive,
-                      int *out_count)
+                       const char *text,
+                       const char *old_str,
+                       int case_sensitive,
+                       int *out_count)
 {
     int text_len = (int)strlen(text);
     *out_count = 0;
 
     int n_tokens = 0;
     int leading_ws = 0, trailing_ws = 0;
-    sds *tokens = tokenize(a, old_str, &n_tokens, &leading_ws, &trailing_ws);
+    int *newline_sep = NULL;
+    sds *tokens = tokenize(a, old_str, &n_tokens, &leading_ws, &trailing_ws,
+                           &newline_sep);
 
     if (n_tokens == 0)
         return NULL;
@@ -270,6 +334,7 @@ MatchSpan* fuzzy_find(Arena *a,
             int ms = 0;
             int me = try_match_tokens(text, text_len, i,
                                       tokens, n_tokens,
+                                      newline_sep,
                                       leading_ws, trailing_ws,
                                       case_sensitive, &ms);
             if (me >= 0) {
@@ -296,10 +361,10 @@ MatchSpan* fuzzy_find(Arena *a,
 }
 
 sds fuzzy_find_one(Arena *a,
-                   const char *text,
-                   const char *old_str,
-                   int case_sensitive,
-                   int idx)
+                    const char *text,
+                    const char *old_str,
+                    int case_sensitive,
+                    int idx)
 {
     int count = 0;
     MatchSpan *spans = fuzzy_find(a, text, old_str, case_sensitive, &count);
