@@ -685,9 +685,11 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     cJSON *o  = cJSON_GetObjectItem(args, "old");
     cJSON *n  = cJSON_GetObjectItem(args, "new");
     cJSON *ra = cJSON_GetObjectItem(args, "replace_all");
+    cJSON *fz = cJSON_GetObjectItem(args, "fuzzy");
     const char *old_str     = (o  && cJSON_IsString(o))  ? o->valuestring  : NULL;
     const char *new_str     = (n  && cJSON_IsString(n))  ? n->valuestring  : NULL;
     int         replace_all = (ra && cJSON_IsBool(ra))   ? cJSON_IsTrue(ra) : 0;
+    int         fuzzy       = (fz && cJSON_IsBool(fz))   ? cJSON_IsTrue(fz) : 0;  /* default false = strict */
 
     if (!old_str || !*old_str) {
         cJSON_AddStringToObject(result, "text",
@@ -726,9 +728,36 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     char *buf = read_file_at(abs_path, TOOL_READ_MAX_BYTES, &nread, result);
     if (!buf) { tool_arena_cleanup(); return result; }
 
-    /* ── Fuzzy find all match positions ── */
+    /* ── Find all match positions (fuzzy or strict) ── */
     int match_count = 0;
-    MatchSpan *spans = fuzzy_find(&tool_arena, buf, old_str, 1, &match_count);
+    MatchSpan *spans = NULL;
+
+    if (fuzzy) {
+        spans = fuzzy_find(&tool_arena, buf, old_str, 1, &match_count);
+    } else {
+        /* Strict exact-match: scan for old_str in buf */
+        int old_len = (int)strlen(old_str);
+        int cap = 8;
+        spans = (MatchSpan*)arena_alloc(&tool_arena, sizeof(MatchSpan) * cap);
+        int pos = 0;
+        while (pos <= (int)nread - old_len) {
+            if (memcmp(buf + pos, old_str, old_len) == 0) {
+                if (match_count >= cap) {
+                    int old_cap = cap;
+                    cap *= 2;
+                    spans = (MatchSpan*)arena_realloc(&tool_arena, spans,
+                                                       sizeof(MatchSpan) * old_cap,
+                                                       sizeof(MatchSpan) * cap);
+                }
+                spans[match_count].start  = pos;
+                spans[match_count].finish = pos + old_len;
+                match_count++;
+                pos += old_len;
+            } else {
+                pos++;
+            }
+        }
+    }
 
     if (match_count == 0) {
         free(buf);
@@ -775,8 +804,9 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
     /* Generate diff for preview and result */
     char *diff_out = diff_text(buf, nread, new_content, new_size, 3);
 
-    /* Preview: show file path, replace mode, and diff */
-    printf("  [tool] editing (fuzzy match): %s\n", abs_path);
+    /* Preview: show file path, replace mode, fuzzy/strict, and diff */
+    printf("  [tool] editing (%s match): %s\n",
+           fuzzy ? "fuzzy" : "strict", abs_path);
     printf("  [%s]\n", replace_all
            ? "replacing ALL occurrences" : "replacing first occurrence only");
     if (diff_out) {
@@ -963,7 +993,9 @@ void tool_functions_add_edit_schema(cJSON *schemas) {
     cJSON_AddStringToObject(func, "description",
         "Replace substring(s) in a file. Finds matches "
         "of 'old', replaces with 'new'. By default replaces only the first "
-        "occurrence; set replace_all=true to replace all. ");
+        "occurrence; set replace_all=true to replace all. "
+        "Set fuzzy=true for whitespace-flexible matching; "
+        "default false uses exact string matching.");
     cJSON_AddTrueToObject(func, "strict");
     cJSON *params = cJSON_AddObjectToObject(func, "parameters");
     cJSON_AddStringToObject(params, "type", "object");
@@ -982,12 +1014,19 @@ void tool_functions_add_edit_schema(cJSON *schemas) {
     cJSON_AddStringToObject(ra, "type", "boolean");
     cJSON_AddStringToObject(ra, "description",
         "If true, replace all occurrences; otherwise replace only the first");
+    cJSON *fz = cJSON_AddObjectToObject(props, "fuzzy");
+    cJSON_AddStringToObject(fz, "type", "boolean");
+    cJSON_AddStringToObject(fz, "description",
+        "If true, match whitespace-flexibly "
+        "(spaces/tabs/CR/em-dashes are interchangeable); "
+        "default false (exact string matching)");
     cJSON_AddFalseToObject(params, "additionalProperties");
     cJSON *required = cJSON_AddArrayToObject(params, "required");
     cJSON_AddItemToArray(required, cJSON_CreateString("path"));
     cJSON_AddItemToArray(required, cJSON_CreateString("old"));
     cJSON_AddItemToArray(required, cJSON_CreateString("new"));
     cJSON_AddItemToArray(required, cJSON_CreateString("replace_all"));
+    cJSON_AddItemToArray(required, cJSON_CreateString("fuzzy"));
     cJSON_AddItemToArray(schemas, schema);
 }
 

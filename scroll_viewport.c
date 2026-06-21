@@ -30,9 +30,27 @@ struct scroll_viewport {
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
+/* Compute the number of visual lines a segment of display-width w
+ * occupies on screen when followed by a newline.
+ *
+ * When w is an exact multiple of term_w, the terminal auto-wraps
+ * after the last character (cursor hits column term_w), and the
+ * trailing '\n' advances one more line.  The segment then consumes
+ * w/term_w + 1 visual rows instead of ceil(w/term_w).
+ *
+ * When the segment is NOT followed by '\n' (final line of buffer)
+ * the standard ceil(w/term_w) is correct. */
+static int seg_visual_lines(int w, int term_w, int followed_by_nl) {
+    if (w <= 0) return 1;
+    if (followed_by_nl && (w % term_w == 0))
+        return w / term_w + 1;
+    int lines = (w + term_w - 1) / term_w;
+    return lines < 1 ? 1 : lines;
+}
+
 /* Estimate the number of visual terminal lines the buffer occupies.
  * Splits by '\n', computes the display width of each segment via
- * utf8_string_width(), and sums ceil(seg_width / term_width).
+ * utf8_string_width(), and sums visual lines for each segment.
  * Returns at least 1 if there's any content. */
 static int estimate_visual_lines(const char *s, size_t len, int term_w) {
     if (!s || len == 0 || term_w <= 0) return 0;
@@ -43,6 +61,7 @@ static int estimate_visual_lines(const char *s, size_t len, int term_w) {
         while (eol < len && s[eol] != '\n') eol++;
         /* Build a temporary null-terminated string for this segment */
         size_t seg_len = eol - i;
+        int followed_by_nl = (eol < len && s[eol] == '\n');
         if (seg_len > 0) {
             /* Temporarily null-terminate (safe because we'll restore) */
             char *p = (char *)s + eol;
@@ -50,13 +69,11 @@ static int estimate_visual_lines(const char *s, size_t len, int term_w) {
             *p = '\0';
             int w = utf8_string_width(s + i);
             *p = old;
-            int seg_lines = (w + term_w - 1) / term_w;
-            if (seg_lines < 1) seg_lines = 1;
-            total += seg_lines;
+            total += seg_visual_lines(w, term_w, followed_by_nl);
         } else {
             total++;  /* empty line */
         }
-        if (eol < len && s[eol] == '\n') {
+        if (followed_by_nl) {
             i = eol + 1;
         } else {
             break;
@@ -200,9 +217,15 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
 
     /* ── Scroll mode: redraw viewport ── */
 
-    /* Move cursor up to the first line of our output area */
-    if (vp->printed_lines > 0)
-        printf("\033[%dA", vp->printed_lines);
+    /* Clamp cursor movement: never move up more lines than the
+     * viewport could possibly occupy.  This guards against
+     * accumulated estimation errors causing the cursor to overshoot
+     * into content above the viewport (e.g. the "User >" prompt). */
+    int move_up = vp->printed_lines;
+    if (move_up > vp->max_lines * 2)
+        move_up = vp->max_lines * 2;
+    if (move_up > 0)
+        printf("\033[%dA", move_up);
 
     /* Clear from cursor to end of screen */
     printf("\r\033[J");
@@ -227,6 +250,7 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
         size_t eol = pos;
         while (eol < vp->full_len && vp->full_buf[eol] != '\n') eol++;
         size_t seg_len = eol - pos;
+        int followed_by_nl = (eol < vp->full_len && vp->full_buf[eol] == '\n');
 
         /* Calculate visual lines this logical line occupies */
         int seg_visual = 1;
@@ -235,8 +259,7 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
             vp->full_buf[eol] = '\0';
             int w = utf8_string_width(vp->full_buf + pos);
             vp->full_buf[eol] = saved;
-            seg_visual = (w + vp->term_width - 1) / vp->term_width;
-            if (seg_visual < 1) seg_visual = 1;
+            seg_visual = seg_visual_lines(w, vp->term_width, followed_by_nl);
         }
 
         if (visual_skipped < target_skip) {
@@ -269,7 +292,7 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
             visual_skipped += seg_visual;
         }
 
-        if (eol < vp->full_len && vp->full_buf[eol] == '\n')
+        if (followed_by_nl)
             pos = eol + 1;
         else
             break;

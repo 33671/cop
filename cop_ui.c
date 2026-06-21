@@ -685,6 +685,7 @@ coroutine void cop_ui_repl(cop_context_t *ctx) {
         }
 
         /* ── Send message ── */
+        printf("\n");  /* blank line between User prompt and reply */
         fflush(stdout);
         int ret = llm_runtime_send(ctx->rt, line, on_runtime_event, ctx);
         if (llm_runtime_is_cancelled(ctx->rt)) {

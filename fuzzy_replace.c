@@ -24,6 +24,25 @@ static inline int is_hspace(int c) {
     return c == ' ' || c == '\t' || c == '\r';
 }
 
+/* 检查 s[pos] 是否以水平空白（含多字节字符）开始。
+ * 返回消耗的字节数：1=ASCII空白, 3=em dash(U+2014), 0=否。
+ *
+ * Em dash (—) 在自然语言中常作为分隔符使用，与空格/连字符等同。
+ * UTF-8: E2 80 94 */
+static int hspace_len(const char *s, int pos, int len) {
+    if (pos >= len) return 0;
+    unsigned char c = (unsigned char)s[pos];
+    /* ASCII 水平空白 */
+    if (c == ' ' || c == '\t' || c == '\r')
+        return 1;
+    /* Em dash U+2014: E2 80 94 */
+    if (c == 0xE2 && pos + 3 <= len &&
+        (unsigned char)s[pos+1] == 0x80 &&
+        (unsigned char)s[pos+2] == 0x94)
+        return 3;
+    return 0;
+}
+
 /* ──────────────────────────────────────────────
  * 内部：按水平空白切分 old_str 为 token 数组
  * ────────────────────────────────────────────── */
@@ -53,21 +72,25 @@ static sds* tokenize(Arena *a,
     *trailing_ws = 0;
     if (slen == 0) return NULL;
 
-    /* 判断首尾水平空白 */
-    *leading_ws  = is_hspace((unsigned char)s[0]) ? 1 : 0;
-    *trailing_ws = is_hspace((unsigned char)s[slen - 1]) ? 1 : 0;
+    /* 判断首尾水平空白（含多字节如 em dash）*/
+    *leading_ws  = (hspace_len(s, 0, slen) > 0) ? 1 : 0;
+    *trailing_ws = (slen > 0 && hspace_len(s, slen - 1, slen) > 0) ? 1 : 0;
 
     /* 第一遍：数 token。仅水平空白是分隔符；'\n' 是 token 的一部分。*/
     int tok_count = 0;
     int in_token = 0;
-    for (int i = 0; i < slen; i++) {
-        if (is_hspace((unsigned char)s[i])) {
+    int i = 0;
+    while (i < slen) {
+        int hl = hspace_len(s, i, slen);
+        if (hl > 0) {
             in_token = 0;
+            i += hl;
         } else {
             if (!in_token) {
                 tok_count++;
                 in_token = 1;
             }
+            i++;
         }
     }
     if (tok_count == 0) {
@@ -82,18 +105,26 @@ static sds* tokenize(Arena *a,
     int idx = 0;
     in_token = 0;
     int tok_start = 0;
-    for (int i = 0; i <= slen; i++) {
-        int ws = (i == slen) || is_hspace((unsigned char)s[i]);
+    i = 0;
+    while (i <= slen) {
+        int ws = (i == slen) || (hspace_len(s, i, slen) > 0);
         if (ws) {
             if (in_token) {
                 tokens[idx++] = sdsnewlen(a, s + tok_start, i - tok_start);
                 in_token = 0;
+            }
+            if (i < slen) {
+                int hl = hspace_len(s, i, slen);
+                i += (hl > 0) ? hl : 1;
+            } else {
+                i++;
             }
         } else {
             if (!in_token) {
                 tok_start = i;
                 in_token = 1;
             }
+            i++;
         }
     }
 
@@ -134,15 +165,17 @@ static int try_match_tokens(const char *text,
     /* ── 1. 处理 leading whitespace ── */
     if (leading_ws) {
         /* old_str 以水平空白开头：匹配块从此处开始 */
-        if (ti >= text_len || !is_hspace((unsigned char)text[ti]))
+        int hl = hspace_len(text, ti, text_len);
+        if (hl <= 0)
             return -1;
         *out_start = ti;
-        while (ti < text_len && is_hspace((unsigned char)text[ti]))
-            ti++;
+        while (ti < text_len && (hl = hspace_len(text, ti, text_len)) > 0)
+            ti += hl;
     } else {
         /* 跳过所有前导水平空白（'\n' 不会被跳过，它是 token）*/
-        while (ti < text_len && is_hspace((unsigned char)text[ti]))
-            ti++;
+        int hl;
+        while (ti < text_len && (hl = hspace_len(text, ti, text_len)) > 0)
+            ti += hl;
         *out_start = ti;
     }
 
@@ -150,12 +183,11 @@ static int try_match_tokens(const char *text,
     for (int idx = 0; idx < n_tokens; idx++) {
         if (idx > 0) {
             /* token 之间消耗任意水平空白（'\n' 是 token，不会被消耗）*/
-            if (ti < text_len && !is_hspace((unsigned char)text[ti])) {
-                /* 两个 token 直接相邻（old_str 中它们被 '\n' 分隔，
-                 * 而 '\n' 本身就是 token，所以实际上不会走到这里）*/
+            {
+                int hl;
+                while (ti < text_len && (hl = hspace_len(text, ti, text_len)) > 0)
+                    ti += hl;
             }
-            while (ti < text_len && is_hspace((unsigned char)text[ti]))
-                ti++;
         }
 
         size_t tok_len = sdslen(tokens[idx]);
@@ -178,8 +210,9 @@ static int try_match_tokens(const char *text,
 
     /* ── 3. 处理 trailing horizontal whitespace ── */
     if (trailing_ws) {
-        while (ti < text_len && is_hspace((unsigned char)text[ti]))
-            ti++;
+        int hl;
+        while (ti < text_len && (hl = hspace_len(text, ti, text_len)) > 0)
+            ti += hl;
     }
 
     return ti;  /* match_end */
@@ -218,7 +251,7 @@ sds fuzzy_replace(Arena *a,
          * 优化：若 old_str 不以空白开头，只在非水平空白位置尝试匹配。
          * '\n' 不是水平空白，所以不会被跳过。
          */
-        int should_try = leading_ws || !is_hspace((unsigned char)text[i]);
+        int should_try = leading_ws || (hspace_len(text, i, text_len) == 0);
 
         if (should_try) {
             int match_start = 0;
@@ -285,7 +318,7 @@ MatchSpan* fuzzy_find(Arena *a,
 
     int i = 0;
     while (i < text_len) {
-        int should_try = leading_ws || !is_hspace((unsigned char)text[i]);
+        int should_try = leading_ws || (hspace_len(text, i, text_len) == 0);
 
         if (should_try) {
             int ms = 0;

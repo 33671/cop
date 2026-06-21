@@ -73,10 +73,14 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args);
  * user approval before applying.
  *
  * Args: {"path": "<filepath>", "old": "<substring to replace>",
- *        "new": "<replacement>", "replace_all": <bool>}
+ *        "new": "<replacement>", "replace_all": <bool>,
+ *        "fuzzy": <bool>}
  *   old         – substring to find and replace
  *   new         – replacement substring
  *   replace_all – if true replace all occurrences, otherwise only first
+ *   fuzzy       – if true (default), match whitespace-flexibly
+ *                 (spaces/tabs/CR/em-dash are interchangeable);
+ *                 if false, use exact/ strict string matching
  * Returns: {"type": "text", "text": "Successfully replaced in <abs_path>"}
  */
 cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args);
