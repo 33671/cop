@@ -442,6 +442,11 @@ sds get_last_n_lines_truncated(Arena *a, const char *data, size_t len,
     sds result = sdsempty(a);
     if (!data || len == 0 || n <= 0) return result;
 
+    /* Sanitize raw data in-place before extracting lines.
+     * This prevents binary/invalid-UTF8 bytes from being stored
+     * in tool result messages and later causing API JSON errors. */
+    sanitize_utf8((uint8_t *)data, len);
+
     ssize_t pos = (ssize_t)len;
     /* Skip a single trailing newline */
     if (pos > 0 && data[pos - 1] == '\n') pos--;

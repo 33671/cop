@@ -6,6 +6,7 @@
 
 #include "history_db.h"
 #include "utils.h"
+#include "utils_utf8.h"
 #include "sds/sds.h"
 #include "sqlite/sqlite3.h"
 #include <stdio.h>
@@ -452,7 +453,18 @@ cJSON *history_db_load_session(history_db_t *db, int64_t session_id) {
         cJSON_AddStringToObject(msg, "role", role ? role : "");
 
         if (content) {
-            cJSON_AddStringToObject(msg, "content", content);
+            /* Sanitize in a mutable copy: prevent binary / invalid-UTF8
+             * content (e.g. from old tool outputs) from reaching the API. */
+            size_t clen = strlen(content);
+            char *clean = malloc(clen + 1);
+            if (clean) {
+                memcpy(clean, content, clen + 1);
+                sanitize_utf8((uint8_t *)clean, clen);
+                cJSON_AddStringToObject(msg, "content", clean);
+                free(clean);
+            } else {
+                cJSON_AddStringToObject(msg, "content", content);
+            }
         }
 
         if (reasoning && reasoning[0]) {
