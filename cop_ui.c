@@ -641,7 +641,7 @@ coroutine void cop_ui_repl(cop_context_t *ctx) {
 
         if (ctx->want_exit) break;
 
-        char *line = ic_readline("[green][b]User[/] ");
+        char *line = ic_readline("[white on #5B6ABF]User[/] ");
         if (!line) break;
 
         size_t len = strlen(line);

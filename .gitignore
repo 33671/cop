@@ -15,3 +15,8 @@ trash/
 *.json
 .vscode
 *.gz
+
+# Compiled test binaries
+test_fuzzy_builtin
+test_newline_issue
+test_verify
