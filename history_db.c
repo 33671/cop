@@ -74,7 +74,7 @@ int history_db_open(history_db_t **db_out) {
     if (!db) return -1;
 
     Arena a = {0};
-    char *expanded = expand_tilde("~/.cop/history.sql");
+    char *expanded = expand_tilde("~/.cop/history.db");
     sds db_path = expanded ? sdsnew(&a, expanded) : NULL;
     free(expanded);
     if (!db_path) {
