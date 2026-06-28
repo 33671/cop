@@ -907,6 +907,9 @@ cJSON *tool_lua(llm_runtime_t *rt, const cJSON *args) {
     char *output = NULL;
     int status = cop_lua_execute(code, &output);
 
+    /* Sanitize output: strip invalid UTF-8, ANSI escapes, truncate per-line/total */
+    sanitize_truncate_output(&output, OUTPUT_MAX_LINE, OUTPUT_MAX_TOTAL);
+
     /* Feed output to viewport */
     if (output && output[0]) {
         scroll_viewport_feed(output, (int)strlen(output), vp);
@@ -918,6 +921,8 @@ cJSON *tool_lua(llm_runtime_t *rt, const cJSON *args) {
     /* Get output from viewport */
     size_t raw_len = 0;
     char *vp_output = scroll_viewport_finish(vp, &raw_len);
+    /* Also sanitize viewport output (may differ due to wrapping) */
+    sanitize_truncate_output(&vp_output, OUTPUT_MAX_LINE, OUTPUT_MAX_TOTAL);
 
     if (status != 0) {
         /* Error */

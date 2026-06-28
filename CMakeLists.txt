@@ -246,11 +246,13 @@ target_link_libraries(tool_functions
     cjson
     utils_utf8
     lua
+    sqlite3
 )
 target_include_directories(tool_functions PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/cjson
     ${CMAKE_CURRENT_SOURCE_DIR}/isocline/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
 )
 
 # cop — main agent executable
@@ -307,10 +309,11 @@ target_link_libraries(llm_runtime_test
 # Lua interpreter test
 add_executable(test_lua test_lua.c cop_lua.c)
 target_compile_options(test_lua PRIVATE -std=c11 -D_GNU_SOURCE)
-target_link_libraries(test_lua lua)
+target_link_libraries(test_lua lua sqlite3)
 target_include_directories(test_lua PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/lua
+    ${CMAKE_CURRENT_SOURCE_DIR}/sqlite
 )
 
 # UTF-8 Sanitizer library and tests

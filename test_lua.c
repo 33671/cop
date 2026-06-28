@@ -54,12 +54,59 @@ int main(void) {
         "print('sum 1..100 =', sum)";
     test("complex loop",         complex,                         1, "5050");
 
+    /* SQLite tests */
+    test("sqlite open memory",
+         "local db = cop.sqlite_open(); print(tostring(db))",
+         1, "sqlite3[");
+    test("sqlite create table",
+         "local db = cop.sqlite_open();"
+         "local r = cop.sqlite_exec(db, 'CREATE TABLE t(x)');"
+         "print(r.rows_affected)",
+         1, "0");
+    test("sqlite insert+query",
+         "local db = cop.sqlite_open();"
+         "cop.sqlite_exec(db, 'CREATE TABLE t(x)');"
+         "cop.sqlite_exec(db, 'INSERT INTO t VALUES(42)');"
+         "local rows = cop.sqlite_get(db, 'SELECT * FROM t');"
+         "print(#rows, rows[1].x)",
+         1, "42");
+    test("sqlite get_one",
+         "local db = cop.sqlite_open();"
+         "cop.sqlite_exec(db, 'CREATE TABLE t(x)');"
+         "cop.sqlite_exec(db, 'INSERT INTO t VALUES(7)');"
+         "local r = cop.sqlite_get_one(db, 'SELECT * FROM t');"
+         "print(r.x)",
+         1, "7");
+    test("sqlite get_one nil",
+         "local db = cop.sqlite_open();"
+         "cop.sqlite_exec(db, 'CREATE TABLE t(x)');"
+         "local r = cop.sqlite_get_one(db, 'SELECT * FROM t WHERE x=999');"
+         "print(r)",
+         1, "nil");
+    test("sqlite close",
+         "local db = cop.sqlite_open();"
+         "cop.sqlite_close(db);"
+         "print('ok')",
+         1, "ok");
+    test("sqlite multiple types",
+         "local db = cop.sqlite_open();"
+         "cop.sqlite_exec(db, 'CREATE TABLE t(i,f,s)');"
+         "cop.sqlite_exec(db, [[INSERT INTO t VALUES(1,3.14,'hello')]]);"
+         "local r = cop.sqlite_get_one(db, 'SELECT * FROM t');"
+         "print(r.i, r.f, r.s)",
+         1, "1");
+    test("sqlite error handling",
+         "local db = cop.sqlite_open();"
+         "local ok, err = cop.sqlite_exec(db, 'BAD SQL');"
+         "print(ok, err)",
+         1, "nil");
+
     /* State persistence across calls */
     cop_lua_execute("counter = (counter or 0) + 1; print(counter)", NULL);
     cop_lua_execute("counter = (counter or 0) + 1; print(counter)", NULL);
     /* This is a visual check - counter should be 1 then 2 */
 
-    printf("\n%d / %d tests passed.\n", 8 - failures, 8);
+    printf("\n%d / %d tests passed.\n", 16 - failures, 16);
 
     cop_lua_cleanup();
     return failures ? 1 : 0;

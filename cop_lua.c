@@ -12,6 +12,7 @@
  */
 
 #include "cop_lua.h"
+#include "sqlite/sqlite3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,6 +229,257 @@ static int l_cop_shell(lua_State *L) {
 }
 
 /* ============================================================================
+ * SQLite3 wrappers (built-in, no dynamic loading needed)
+ * ============================================================================ */
+
+/* Metatable name for SQLite database userdata */
+#define SQLITE_DB_MT "cop.sqlite_db"
+
+/* Structure stored in userdata */
+typedef struct {
+    sqlite3 *db;
+} sqlite_db_t;
+
+/* __gc metamethod: close database automatically */
+static int l_sqlite_db_gc(lua_State *L) {
+    sqlite_db_t *p = (sqlite_db_t *)luaL_checkudata(L, 1, SQLITE_DB_MT);
+    if (p && p->db) {
+        sqlite3_close(p->db);
+        p->db = NULL;
+    }
+    return 0;
+}
+
+/* __tostring metamethod */
+static int l_sqlite_db_tostring(lua_State *L) {
+    sqlite_db_t *p = (sqlite_db_t *)luaL_checkudata(L, 1, SQLITE_DB_MT);
+    if (p && p->db) {
+        const char *filename = sqlite3_db_filename(p->db, "main");
+        lua_pushfstring(L, "sqlite3[%s]", filename ? filename : "(memory)");
+    } else {
+        lua_pushstring(L, "sqlite3[closed]");
+    }
+    return 1;
+}
+
+/* Push a new db userdata onto the stack */
+static sqlite_db_t *push_sqlite_db(lua_State *L, sqlite3 *db) {
+    sqlite_db_t *p = (sqlite_db_t *)lua_newuserdata(L, sizeof(sqlite_db_t));
+    p->db = db;
+
+    /* Set metatable for garbage collection */
+    if (luaL_newmetatable(L, SQLITE_DB_MT)) {
+        /* First time: set up the metatable */
+        lua_pushcfunction(L, l_sqlite_db_gc);
+        lua_setfield(L, -2, "__gc");
+
+        lua_pushcfunction(L, l_sqlite_db_tostring);
+        lua_setfield(L, -2, "__tostring");
+
+        /* Make the metatable its own __index (for db:method support if needed) */
+        lua_pushvalue(L, -1);
+        lua_setfield(L, -2, "__index");
+    }
+    lua_setmetatable(L, -2);
+    return p;
+}
+
+/* cop.sqlite_open(filename) → db_handle or nil+error */
+static int l_cop_sqlite_open(lua_State *L) {
+    const char *path = luaL_optstring(L, 1, ":memory:");
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open(path, &db);
+    if (rc != SQLITE_OK) {
+        if (db) {
+            lua_pushnil(L);
+            lua_pushfstring(L, "%s", sqlite3_errmsg(db));
+            sqlite3_close(db);
+        } else {
+            lua_pushnil(L);
+            lua_pushstring(L, "out of memory");
+        }
+        return 2;
+    }
+    push_sqlite_db(L, db);
+    return 1;
+}
+
+/* cop.sqlite_close(db) → true or nil+error */
+static int l_cop_sqlite_close(lua_State *L) {
+    sqlite_db_t *p = (sqlite_db_t *)luaL_checkudata(L, 1, SQLITE_DB_MT);
+    if (!p->db) {
+        lua_pushnil(L);
+        lua_pushstring(L, "database already closed");
+        return 2;
+    }
+    int rc = sqlite3_close(p->db);
+    if (rc != SQLITE_OK) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "%s", sqlite3_errmsg(p->db));
+        return 2;
+    }
+    p->db = NULL;
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* Column-type helper: push a single column value onto Lua stack */
+static void push_column_value(lua_State *L, sqlite3_stmt *stmt, int col) {
+    switch (sqlite3_column_type(stmt, col)) {
+        case SQLITE_NULL:
+            lua_pushnil(L);
+            break;
+        case SQLITE_INTEGER:
+            lua_pushinteger(L, sqlite3_column_int64(stmt, col));
+            break;
+        case SQLITE_FLOAT:
+            lua_pushnumber(L, sqlite3_column_double(stmt, col));
+            break;
+        default:
+            lua_pushstring(L, (const char *)sqlite3_column_text(stmt, col));
+            break;
+    }
+}
+
+/* cop.sqlite_exec(db, sql) → table with info, or nil+error */
+static int l_cop_sqlite_exec(lua_State *L) {
+    sqlite_db_t *p = (sqlite_db_t *)luaL_checkudata(L, 1, SQLITE_DB_MT);
+    if (!p->db) {
+        lua_pushnil(L);
+        lua_pushstring(L, "database is closed");
+        return 2;
+    }
+    const char *sql = luaL_checkstring(L, 2);
+
+    char *errmsg = NULL;
+    int rc = sqlite3_exec(p->db, sql, NULL, NULL, &errmsg);
+    if (rc != SQLITE_OK) {
+        lua_pushnil(L);
+        lua_pushstring(L, errmsg ? errmsg : "unknown error");
+        sqlite3_free(errmsg);
+        return 2;
+    }
+
+    lua_newtable(L);
+    lua_pushstring(L, "rows_affected");
+    lua_pushinteger(L, sqlite3_changes(p->db));
+    lua_settable(L, -3);
+    lua_pushstring(L, "last_insert_id");
+    lua_pushinteger(L, sqlite3_last_insert_rowid(p->db));
+    lua_settable(L, -3);
+    return 1;
+}
+
+/* cop.sqlite_get(db, sql) → array of row-tables, or nil+error */
+static int l_cop_sqlite_get(lua_State *L) {
+    sqlite_db_t *p = (sqlite_db_t *)luaL_checkudata(L, 1, SQLITE_DB_MT);
+    if (!p->db) {
+        lua_pushnil(L);
+        lua_pushstring(L, "database is closed");
+        return 2;
+    }
+    const char *sql = luaL_checkstring(L, 2);
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(p->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "%s", sqlite3_errmsg(p->db));
+        return 2;
+    }
+
+    lua_newtable(L); /* result array */
+    int row_idx = 1;
+    int ncols = 0;
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        if (ncols == 0) ncols = sqlite3_column_count(stmt);
+
+        lua_newtable(L); /* one row */
+
+        for (int i = 0; i < ncols; i++) {
+            /* Numeric index (1-based) */
+            lua_pushinteger(L, i + 1);
+            push_column_value(L, stmt, i);
+            lua_settable(L, -3);
+
+            /* Named index (column name) */
+            const char *name = sqlite3_column_name(stmt, i);
+            if (name) {
+                lua_pushstring(L, name);
+                /* Need to push value again */
+                push_column_value(L, stmt, i);
+                lua_settable(L, -3);
+            }
+        }
+
+        lua_rawseti(L, -2, row_idx++);
+    }
+
+    if (rc != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        lua_pushnil(L);
+        lua_pushfstring(L, "%s", sqlite3_errmsg(p->db));
+        return 2;
+    }
+
+    sqlite3_finalize(stmt);
+    return 1; /* the result table */
+}
+
+/* cop.sqlite_get_one(db, sql) → one row or nil, or nil+error */
+static int l_cop_sqlite_get_one(lua_State *L) {
+    sqlite_db_t *p = (sqlite_db_t *)luaL_checkudata(L, 1, SQLITE_DB_MT);
+    if (!p->db) {
+        lua_pushnil(L);
+        lua_pushstring(L, "database is closed");
+        return 2;
+    }
+    const char *sql = luaL_checkstring(L, 2);
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(p->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "%s", sqlite3_errmsg(p->db));
+        return 2;
+    }
+
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        lua_newtable(L);
+        int ncols = sqlite3_column_count(stmt);
+        for (int i = 0; i < ncols; i++) {
+            /* Numeric index */
+            lua_pushinteger(L, i + 1);
+            push_column_value(L, stmt, i);
+            lua_settable(L, -3);
+
+            /* Named index */
+            const char *name = sqlite3_column_name(stmt, i);
+            if (name) {
+                lua_pushstring(L, name);
+                push_column_value(L, stmt, i);
+                lua_settable(L, -3);
+            }
+        }
+        sqlite3_finalize(stmt);
+        return 1;
+    }
+
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "%s", sqlite3_errmsg(p->db));
+        return 2;
+    }
+
+    lua_pushnil(L); /* no rows returned */
+    return 1;
+}
+
+/* ============================================================================
  * Register helpers into a "cop" global table
  * ============================================================================ */
 
@@ -248,6 +500,22 @@ static void register_cop_helpers(lua_State *L) {
 
     lua_pushcfunction(L, l_cop_shell);
     lua_setfield(L, -2, "shell");
+
+    /* SQLite functions */
+    lua_pushcfunction(L, l_cop_sqlite_open);
+    lua_setfield(L, -2, "sqlite_open");
+
+    lua_pushcfunction(L, l_cop_sqlite_close);
+    lua_setfield(L, -2, "sqlite_close");
+
+    lua_pushcfunction(L, l_cop_sqlite_exec);
+    lua_setfield(L, -2, "sqlite_exec");
+
+    lua_pushcfunction(L, l_cop_sqlite_get);
+    lua_setfield(L, -2, "sqlite_get");
+
+    lua_pushcfunction(L, l_cop_sqlite_get_one);
+    lua_setfield(L, -2, "sqlite_get_one");
 
     lua_setglobal(L, "cop");
 }
