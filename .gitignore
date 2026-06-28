@@ -21,3 +21,6 @@ test_fuzzy_builtin
 test_newline_issue
 test_verify
 edit_test_complex
+
+# Profiling artifacts
+heaptrack.cop.*.zst
