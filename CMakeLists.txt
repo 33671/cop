@@ -61,6 +61,19 @@ target_compile_options(mill PRIVATE
 target_compile_options(cjson PRIVATE
     -Wall -Wextra -g -O0
 )
+
+# Lua interpreter library
+file(GLOB LUA_SOURCES lua/*.c)
+add_library(lua STATIC ${LUA_SOURCES})
+target_include_directories(lua PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/lua
+)
+target_compile_options(lua PRIVATE
+    -Wall -Wextra -g -O0 -Wno-unused-parameter -Wno-sign-compare -Wno-old-style-definition
+)
+# Lua needs math library
+target_link_libraries(lua PUBLIC m)
+
 # Check for epoll or kqueue
 include(CheckSymbolExists)
 # check_symbol_exists(epoll_create "sys/epoll.h" HAVE_EPOLL)
@@ -224,7 +237,7 @@ add_library(diff STATIC diff.c)
 target_compile_options(diff PRIVATE ${COMPILE_WARNING_CONTROL})
 target_include_directories(diff PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_library(tool_functions STATIC tool_functions.c scroll_viewport.c fuzzy_replace.c)
+add_library(tool_functions STATIC tool_functions.c scroll_viewport.c fuzzy_replace.c cop_lua.c)
 target_compile_options(tool_functions PRIVATE ${COMPILE_WARNING_CONTROL})
 target_link_libraries(tool_functions
     diff
@@ -232,6 +245,7 @@ target_link_libraries(tool_functions
     llm_runtime
     cjson
     utils_utf8
+    lua
 )
 target_include_directories(tool_functions PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -288,6 +302,15 @@ target_link_libraries(llm_runtime_test
     cjson
     mill
     CURL::libcurl
+)
+
+# Lua interpreter test
+add_executable(test_lua test_lua.c cop_lua.c)
+target_compile_options(test_lua PRIVATE -std=c11 -D_GNU_SOURCE)
+target_link_libraries(test_lua lua)
+target_include_directories(test_lua PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/lua
 )
 
 # UTF-8 Sanitizer library and tests

@@ -23,6 +23,7 @@
 #include "utils_utf8.h"
 
 #include "debug.h"
+#include "cop_lua.h"
 
 /* ============================================================================
  * Shared static arena for all tool functions (avoids malloc/free churn)
@@ -867,6 +868,78 @@ cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args) {
 }
 
 /* ============================================================================
+ * Lua tool: execute Lua code in embedded interpreter
+ * ============================================================================ */
+
+cJSON *tool_lua(llm_runtime_t *rt, const cJSON *args) {
+    /* Parse arguments */
+    const cJSON *code_json = cJSON_GetObjectItem(args, "code");
+    if (!code_json || !cJSON_IsString(code_json)) {
+        cJSON *result = new_text_result(
+            "Error: missing required string argument 'code'");
+        tool_arena_cleanup();
+        return result;
+    }
+    const char *code = cJSON_GetStringValue(code_json);
+
+    cJSON *result = new_text_result(NULL);
+
+    /* Show proposed code and ask for approval */
+    printf("  [tool] proposed Lua code:\n");
+    /* Print code with indentation for readability */
+    const char *p = code;
+    while (*p) {
+        printf("    | %s\n", p);
+        const char *nl = strchr(p, '\n');
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (!check_approval(rt, result,
+            "[yellow][b]Run this Lua code? y/N[/] ",
+            "user denied Lua execution"))
+        return result;
+
+    /* Create scrolling viewport for output display */
+    scroll_viewport_t *vp = scroll_viewport_new();
+    scroll_viewport_set_style(vp, "\033[36m", "\033[0m");  /* cyan for Lua output */
+
+    /* Execute */
+    char *output = NULL;
+    int status = cop_lua_execute(code, &output);
+
+    /* Feed output to viewport */
+    if (output && output[0]) {
+        scroll_viewport_feed(output, (int)strlen(output), vp);
+    } else if (status == 0) {
+        const char *msg = "(no output)\n";
+        scroll_viewport_feed(msg, (int)strlen(msg), vp);
+    }
+
+    /* Get output from viewport */
+    size_t raw_len = 0;
+    char *vp_output = scroll_viewport_finish(vp, &raw_len);
+
+    if (status != 0) {
+        /* Error */
+        const char *err = output ? output : "Unknown Lua execution error";
+        cJSON_AddStringToObject(result, "text", err);
+        printf("  [tool] Lua error: %s\n", err);
+    } else {
+        /* Success */
+        const char *display = vp_output ? vp_output : (output ? output : "(no output)");
+        sds text = sdscatprintf(sdsempty(&tool_arena),
+            "Lua executed successfully.\nOutput:\n%s", display);
+        cJSON_AddStringToObject(result, "text", text);
+        printf("  [tool] Lua executed successfully.\n");
+    }
+
+    free(vp_output);
+    free(output);
+    tool_arena_cleanup();
+    return result;
+}
+
+/* ============================================================================
  * Tool Schema Helpers
  * ============================================================================ */
 
@@ -985,6 +1058,36 @@ void tool_functions_add_write_schema(cJSON *schemas) {
     cJSON_AddItemToArray(schemas, schema);
 }
 
+void tool_functions_add_lua_schema(cJSON *schemas) {
+    cJSON *schema = cJSON_CreateObject();
+    cJSON_AddStringToObject(schema, "type", "function");
+    cJSON *func = cJSON_AddObjectToObject(schema, "function");
+    cJSON_AddStringToObject(func, "name", "lua");
+    cJSON_AddStringToObject(func, "description",
+        "Execute Lua code in the embedded Lua interpreter. "
+        "Use print() to produce text output. "
+        "Available helper functions via the 'cop' global table:\n"
+        "  cop.pwd()                  -> current directory\n"
+        "  cop.ls([path])             -> list files (table)\n"
+        "  cop.read_file(path)        -> file contents as string\n"
+        "  cop.write_file(path, cnt)  -> write string to file\n"
+        "  cop.shell(cmd)             -> {output=..., exit_code=...}\n"
+        "All standard Lua libraries (math, string, table, os, io, etc.) "
+        "are available. The code runs with user approval via the tool "
+        "approval mechanism.");
+    cJSON_AddTrueToObject(func, "strict");
+    cJSON *params = cJSON_AddObjectToObject(func, "parameters");
+    cJSON_AddStringToObject(params, "type", "object");
+    cJSON *props = cJSON_AddObjectToObject(params, "properties");
+    cJSON *code = cJSON_AddObjectToObject(props, "code");
+    cJSON_AddStringToObject(code, "type", "string");
+    cJSON_AddStringToObject(code, "description", "Lua source code to execute");
+    cJSON_AddFalseToObject(params, "additionalProperties");
+    cJSON *required = cJSON_AddArrayToObject(params, "required");
+    cJSON_AddItemToArray(required, cJSON_CreateString("code"));
+    cJSON_AddItemToArray(schemas, schema);
+}
+
 void tool_functions_add_edit_schema(cJSON *schemas) {
     cJSON *schema = cJSON_CreateObject();
     cJSON_AddStringToObject(schema, "type", "function");
@@ -1038,5 +1141,6 @@ cJSON *tool_functions_create_schema(void) {
     tool_functions_add_read_schema(schemas);
     tool_functions_add_write_schema(schemas);
     tool_functions_add_edit_schema(schemas);
+    tool_functions_add_lua_schema(schemas);
     return schemas;
 }

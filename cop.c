@@ -23,6 +23,7 @@
 #include "cop_ui.h"
 #include "libmill/libmill.h"
 #include "sds/sds.h"
+#include "cop_lua.h"
 
 /* ============================================================================
  * Global context pointer - for signal handler access only
@@ -175,6 +176,7 @@ int main(int argc, char *argv[]) {
     llm_runtime_register_tool(rt, "read",  tool_read);
     llm_runtime_register_tool(rt, "write", tool_write);
     llm_runtime_register_tool(rt, "edit",  tool_edit);
+    llm_runtime_register_tool(rt, "lua",   tool_lua);
 
     cJSON *schemas = tool_functions_create_schema();
     llm_runtime_set_tool_schema(rt, schemas);
@@ -198,6 +200,7 @@ int main(int argc, char *argv[]) {
     /* Clean up */
     history_db_close(app.db);
     llm_runtime_free(rt);
+    cop_lua_cleanup();
     curl_global_cleanup();
     return 0;
 }

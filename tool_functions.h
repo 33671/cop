@@ -85,6 +85,17 @@ cJSON *tool_write(llm_runtime_t *rt, const cJSON *args);
  */
 cJSON *tool_edit(llm_runtime_t *rt, const cJSON *args);
 
+/*
+ * Lua tool: executes Lua code in the embedded interpreter.
+ * Captures print() output and returns it as text.
+ * Exposes cop.* helper functions (cop.pwd, cop.ls, cop.read_file,
+ * cop.write_file, cop.shell) for interaction with the project.
+ *
+ * Args: {"code": "<lua source code>"}
+ * Returns: {"type": "text", "text": "<captured output or error>"}
+ */
+cJSON *tool_lua(llm_runtime_t *rt, const cJSON *args);
+
 /* ============================================================================
  * Per-step Arena Trimming
  * ============================================================================ */
@@ -103,12 +114,13 @@ void tool_functions_add_shell_schema(cJSON *schemas);
 void tool_functions_add_read_schema(cJSON *schemas);
 void tool_functions_add_write_schema(cJSON *schemas);
 void tool_functions_add_edit_schema(cJSON *schemas);
+void tool_functions_add_lua_schema(cJSON *schemas);
 
 /*
  * Create a complete cJSON array with all tool schemas.
  * The caller owns the returned array and must free it with cJSON_Delete().
  *
- * Includes: sleep, shell, read, write, edit
+ * Includes: sleep, shell, read, write, edit, lua
  *
  * Returns: a new cJSON array, or NULL on allocation failure.
  */
