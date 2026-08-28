@@ -352,6 +352,15 @@ target_include_directories(test_sanitize_utf8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR
 target_compile_options(test_sanitize_utf8 PRIVATE -Wall -Wextra)
 target_link_libraries(test_sanitize_utf8 sds)
 
+# Scroll viewport line-count regression test (virtual-terminal simulation)
+add_executable(test_scroll_viewport test_scroll_viewport.c scroll_viewport.c)
+target_include_directories(test_scroll_viewport PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sds
+)
+target_compile_options(test_scroll_viewport PRIVATE -Wall -Wextra)
+target_link_libraries(test_scroll_viewport utils_utf8 sds)
+
 # Print configuration
 message(STATUS "")
 message(STATUS "=== Build Configuration ===")

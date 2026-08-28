@@ -23,6 +23,7 @@ struct scroll_viewport {
     int    max_lines;      /* max visible lines before scrolling kicks in */
     int    term_checked;   /* whether terminal height has been measured */
     int    term_width;     /* cached terminal width (columns) */
+    int    scroll_mode;    /* 1 after a scroll-mode redraw, 0 in append mode */
     float  ratio;          /* ratio of terminal height (default 0.8) */
     const char *style_pre; /* ANSI prefix for each line (e.g. "\033[90m") */
     const char *style_post;/* ANSI suffix for each line (e.g. "\033[0m") */
@@ -30,22 +31,60 @@ struct scroll_viewport {
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
-/* Compute the number of visual lines a segment of display-width w
- * occupies on screen when followed by a newline.
+/* Compute the number of visual terminal rows a segment of display-width
+ * w occupies: ceil(w / term_w), at least 1.
  *
- * When w is an exact multiple of term_w, the terminal auto-wraps
- * after the last character (cursor hits column term_w), and the
- * trailing '\n' advances one more line.  The segment then consumes
- * w/term_w + 1 visual rows instead of ceil(w/term_w).
+ * IMPORTANT: the viewport always emits "\r\n" after every printed line
+ * (never a bare '\n').  The '\r' resets the column and cancels any
+ * pending auto-wrap, so the following '\n' advances exactly one row on
+ * every terminal - even when the line's width is an exact multiple of
+ * term_w.  (A bare '\n' after a full-width row is terminal-dependent:
+ * xterm-class terminals wrap first and advance TWO rows, others one.
+ * That ambiguity is why we never emit a bare '\n'.)
  *
- * When the segment is NOT followed by '\n' (final line of buffer)
- * the standard ceil(w/term_w) is correct. */
+ * The followed_by_nl parameter is therefore irrelevant to the count and
+ * is kept only to keep call sites readable. */
 static int seg_visual_lines(int w, int term_w, int followed_by_nl) {
+    (void)followed_by_nl;
     if (w <= 0) return 1;
-    if (followed_by_nl && (w % term_w == 0))
-        return w / term_w + 1;
     int lines = (w + term_w - 1) / term_w;
     return lines < 1 ? 1 : lines;
+}
+
+/* Print a slice of the buffer to stdout, converting every '\n' into
+ * "\r\n" so the on-screen layout matches estimate_visual_lines()
+ * exactly (see seg_visual_lines above). */
+static void print_slice(const char *s, size_t len) {
+    size_t start = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '\n') {
+            if (i > start)
+                fwrite(s + start, 1, i - start, stdout);
+            fwrite("\r\n", 1, 2, stdout);
+            start = i + 1;
+        }
+    }
+    if (len > start)
+        fwrite(s + start, 1, len - start, stdout);
+}
+/* Find the byte offset within a single logical line s[0..len) (no '\n')
+ * where the visual column reaches `col` (i.e. after skipping `col`
+ * columns of display width).  Returns the offset of the first character
+ * whose STARTING column is >= col, so the tail never begins mid-character.
+ * If the line is shorter than col columns, returns len. */
+static size_t visual_offset(const char *s, size_t len, int col) {
+    size_t off = 0;
+    int vcol = 0;
+    while (off < len && vcol < col) {
+        int bytes;
+        int w = utf8_char_width(s + off, &bytes);
+        if (bytes <= 0) bytes = 1;
+        if (w < 0) w = 1;      /* stray control byte - count as one */
+        vcol += w;
+        off += (size_t)bytes;
+    }
+    if (off > len) off = len;
+    return off;
 }
 
 /* Estimate the number of visual terminal lines the buffer occupies.
@@ -159,7 +198,7 @@ char *scroll_viewport_finish(scroll_viewport_t *vp, size_t *out_len) {
      * line of viewport content.
      */
     if (vp->full_len > 0 && vp->full_buf[vp->full_len - 1] != '\n') {
-        printf("\n");
+        printf("\r\n");
         fflush(stdout);
     }
 
@@ -205,10 +244,13 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
     const char *post = vp->style_post ? vp->style_post : "";
 
     if (total_lines <= vp->max_lines) {
-        /* ── Normal mode: just print the chunk ── */
+        /* ── Normal mode: just print the chunk ──
+         * Newlines are emitted as "\r\n" so the on-screen layout matches
+         * estimate_visual_lines() on every terminal (see seg_visual_lines). */
+        vp->scroll_mode = 0;
         printf("%s", pre);
         if (stripped_len > 0)
-            printf("%.*s", (int)stripped_len, vp->full_buf + chunk_start);
+            print_slice(vp->full_buf + chunk_start, stripped_len);
         printf("%s", post);
         fflush(stdout);
         vp->printed_lines = total_lines;
@@ -217,25 +259,42 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
 
     /* ── Scroll mode: redraw viewport ── */
 
-    /* Clamp cursor movement: never move up more lines than the
-     * viewport could possibly occupy.  This guards against
-     * accumulated estimation errors causing the cursor to overshoot
-     * into content above the viewport (e.g. the "User >" prompt). */
-    int move_up = vp->printed_lines;
-    if (move_up > vp->max_lines * 2)
+    /* Move the cursor back to the top of the previously printed area.
+     *
+     * Append mode: the cursor sits ON the last content row (buffer has no
+     * trailing '\n') or one row below it (buffer ends with '\n').  We need
+     * to reach the FIRST content row, hence the -1 adjustment.  This is the
+     * off-by-one that used to make the redraw drift upward by one row at
+     * the append→scroll transition.
+     *
+     * Scroll mode: the previous redraw always ended with "\r\n", so the
+     * cursor is exactly max_lines rows below the redraw top. */
+    int move_up;
+    if (vp->scroll_mode) {
+        move_up = vp->printed_lines;
+    } else {
+        /* The cursor was positioned by the PREVIOUS feed, so inspect the
+         * buffer state before this chunk was appended (chunk_start). */
+        int ends_with_nl = (chunk_start > 0 &&
+                            vp->full_buf[chunk_start - 1] == '\n');
+        move_up = vp->printed_lines - (ends_with_nl ? 0 : 1);
+    }
+    if (move_up < 0) move_up = 0;
+    if (move_up > vp->max_lines * 2)   /* safety net against estimator bugs */
         move_up = vp->max_lines * 2;
     if (move_up > 0)
         printf("\033[%dA", move_up);
 
     /* Clear from cursor to end of screen */
     printf("\r\033[J");
+    vp->scroll_mode = 1;
 
     /* Calculate visible area: reserve one line for the scroll indicator */
     int visible_lines = vp->max_lines - 1;
     int hidden = total_lines - visible_lines;
 
     /* Print scroll indicator (always dim, independent of content style) */
-    printf("\033[90m... (%d lines above, %d total)\033[0m\n", hidden, total_lines);
+    printf("\033[90m... (%d lines above, %d total)\033[0m\r\n", hidden, total_lines);
 
     /* Walk buffer by logical lines, skipping visual lines to show
      * only the last (visible_lines) visual lines. */
@@ -268,14 +327,17 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
             if (seg_visual <= can_skip) {
                 visual_skipped += seg_visual;
             } else {
-                /* This logical line straddles the boundary - print its tail */
+                /* This logical line straddles the boundary - print its tail.
+                 * The tail starts at the true visual wrap boundary so the
+                 * number of rows it actually occupies equals
+                 * seg_visual - skip_here, keeping the redraw exactly
+                 * max_lines rows tall. */
                 int skip_here = can_skip;
-                size_t offset = (size_t)((long long)skip_here * (long long)seg_len
-                                         / (long long)seg_visual);
-                if (offset > seg_len) offset = seg_len;
+                size_t offset = visual_offset(vp->full_buf + pos, seg_len,
+                                              skip_here * vp->term_width);
                 printf("%s", pre);
                 printf("%.*s", (int)(seg_len - offset), vp->full_buf + pos + offset);
-                printf("%s\n", post);
+                printf("%s\r\n", post);
                 lines_emitted++;
                 visual_skipped += seg_visual;
             }
@@ -284,9 +346,9 @@ void scroll_viewport_feed(const char *chunk, int len, void *user_data) {
             if (seg_len > 0) {
                 printf("%s", pre);
                 printf("%.*s", (int)seg_len, vp->full_buf + pos);
-                printf("%s\n", post);
+                printf("%s\r\n", post);
             } else {
-                printf("%s\n%s", pre, post);
+                printf("%s\r\n%s", pre, post);
             }
             lines_emitted++;
             visual_skipped += seg_visual;
